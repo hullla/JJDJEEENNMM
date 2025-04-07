@@ -1,39 +1,43 @@
 import os
 import telebot
+from telebot import types
 
-BOT_TOKEN = os.getenv('7671924788:AAHCVF8B-PiyNC84gbNdn7i54Ai5eWTLm0s')
+TOKEN = os.getenv('7671924788:AAHCVF8B-PiyNC84gbNdn7i54Ai5eWTLm0s')
 CHANNEL_ID = os.getenv('-1001948875251')
 
-bot = telebot.TeleBot(BOT_TOKEN)
-authorized_users = set()
+bot = telebot.TeleBot(TOKEN)
 
-def load_authorized_users():
-    authorized = set()
+def is_user_authorized(user_id):
     try:
-        messages = bot.get_chat_history(chat_id=CHANNEL_ID, limit=100)
-        for msg in messages:
-            if msg.text and msg.text.startswith('User ID: '):
-                user_id = int(msg.text.split(', ')[0].split(': ')[1])
-                authorized.add(user_id)
+        result = bot.search_messages(CHANNEL_ID, query=str(user_id))
+        return len(result) > 0
     except Exception as e:
-        print(f"Error loading authorized users: {e}")
-    return authorized
-
-authorized_users = load_authorized_users()
+        print(f"Error checking authorization: {e}")
+        return False
 
 @bot.message_handler(commands=['start'])
-def handle_start(message):
+def start(message):
     user_id = message.from_user.id
-    if user_id not in authorized_users:
-        lang = (message.from_user.language_code or 'en')[:2].upper()
-        lang = lang if lang in ['RU', 'EN'] else 'EN'
-        bot.send_message(CHANNEL_ID, f"User ID: {user_id}, Language: {lang}")
-        authorized_users.add(user_id)
+    if is_user_authorized(user_id):
+        bot.send_message(message.chat.id, "✅ Вы авторизованы!")
+    else:
+        msg = bot.send_message(message.chat.id, "Выберите язык / Choose language:", 
+                             reply_markup=create_lang_keyboard())
+        bot.register_next_step_handler(msg, process_lang)
 
-@bot.message_handler(func=lambda _: True)
-def handle_all_messages(message):
-    if message.from_user.id not in authorized_users:
-        return
+def create_lang_keyboard():
+    markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+    markup.add(types.KeyboardButton('RU'), types.KeyboardButton('EN'))
+    return markup
+
+def process_lang(message):
+    user_id = message.from_user.id
+    lang = message.text.strip().upper()
+    if lang not in ['RU', 'EN']:
+        lang = 'EN'
+    
+    bot.send_message(CHANNEL_ID, f"User ID: {user_id}, Language: {lang}")
+    bot.send_message(message.chat.id, f"✅ Регистрация завершена! / Registration completed! ({lang})")
 
 if __name__ == '__main__':
-    bot.infinity_polling()
+    bot.polling(none_stop=True)
