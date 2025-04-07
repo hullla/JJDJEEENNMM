@@ -2,11 +2,12 @@ import os
 import telebot
 from telebot import types
 
-TOKEN = os.getenv('7671924788:AAHCVF8B-PiyNC84gbNdn7i54Ai5eWTLm0s')  # Важно: имя переменной должно совпадать
-CHANNEL_ID = os.getenv('-1001948875251')
+# Проверка переменных с выводом понятной ошибки
+if not (TOKEN := os.getenv('7671924788:AAHCVF8B-PiyNC84gbNdn7i54Ai5eWTLm0s')):
+    raise RuntimeError("TELEGRAM_TOKEN environment variable is missing!")
 
-if not TOKEN or not CHANNEL_ID:
-    raise ValueError("Missing environment variables!")
+if not (CHANNEL_ID := os.getenv('-1001948875251')):
+    raise RuntimeError("CHANNEL_ID environment variable is missing!")
 
 bot = telebot.TeleBot(TOKEN)
 
