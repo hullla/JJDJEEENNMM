@@ -1,4 +1,4 @@
-name: Telegram Bot Deployment
+name: Telegram Bot CI
 
 on:
   push:
@@ -9,10 +9,9 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python 3.9
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.9'
@@ -20,19 +19,24 @@ jobs:
       - name: Install dependencies
         run: pip install pyTelegramBotAPI
 
-      - name: Run bot
+      - name: Run Bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
         run: |
+          # Проверка переменных
           if [ -z "$TELEGRAM_TOKEN" ]; then
-            echo "❌ TELEGRAM_TOKEN is missing!"
+            echo "::error::TELEGRAM_TOKEN is not set! Check repository secrets"
             exit 1
           fi
-          
+
           if [ -z "$CHANNEL_ID" ]; then
-            echo "❌ CHANNEL_ID is missing!"
+            echo "::error::CHANNEL_ID is not set! Check repository secrets"
             exit 1
           fi
-          
+
+          # Запуск бота с выводом статуса
+          echo "🟢 Starting bot with credentials:"
+          echo "Channel ID: ${CHANNEL_ID}"
+          echo "Bot token: ${TELEGRAM_TOKEN:0:4}...${TELEGRAM_TOKEN: -4}"
           python app.py
