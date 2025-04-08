@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 # Инициализация бота
-BOT_TOKEN = "7671924788:AAGxFv3Mtkr1xrfDCfA9JfmlaFSkWid9ckg"  # Будет заменено через GitHub Secrets
+BOT_TOKEN = "7671924788:AAFqich6NTHpOA22I6GysTqYXTFM-d0Pulo"  # Будет заменено через GitHub Secrets
 CHANNEL_ID = "-1001948875251"  # Будет заменено через GitHub Secrets
 
 bot = telebot.TeleBot(BOT_TOKEN)
