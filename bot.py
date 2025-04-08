@@ -3,7 +3,7 @@ from telebot import types
 import os
 
 # Получаем токен бота и ID канала из переменных окружения
-BOT_TOKEN = os.getenv('7671924788:AAHCVF8B-PiyNC84gbNdn7i54Ai5eWTLm0s')
+BOT_TOKEN = os.getenv('7671924788:AAGxFv3Mtkr1xrfDCfA9JfmlaFSkWid9ckg')
 CHANNEL_ID = os.getenv('-1001948875251')
 
 # Инициализируем бота
