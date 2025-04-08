@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Инициализация бота
-BOT_TOKEN = "7714752663:AAGV_XL4IfAjZ_o5vqyf29IJlA5scv1BD6c"
+BOT_TOKEN = "7714752663:AAERF4Nj3ICaw0jbv0JyFbCvlut7ZzilTKg"
 CHANNEL_ID = "-1001948875251"  # Оставляем для обратной совместимости
 JSONBIN_API_KEY = "$2a$10$hT79uCEaJENfQBZ7576aL.upUOtnPqJZX53sWcln0HZib/bgs.8.u"
 JSONBIN_BIN_ID = "67f532028a456b796684e974"
