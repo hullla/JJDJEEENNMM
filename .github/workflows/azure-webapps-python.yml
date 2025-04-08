@@ -32,4 +32,4 @@ jobs:
         # Заменяем плейсхолдеры на реальные значения из GitHub Secrets
         sed -i "s/BOT_TOKEN = \"BOT_TOKEN\"/BOT_TOKEN = \"${BOT_TOKEN}\"/g" bot.py
         sed -i "s/CHANNEL_ID = \"CHANNEL_ID\"/CHANNEL_ID = \"${CHANNEL_ID}\"/g" bot.py
-        python bot.py
+        python app.py
