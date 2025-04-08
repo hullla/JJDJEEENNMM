@@ -3,6 +3,7 @@ from telebot import types
 import logging
 import re
 import requests
+import time
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -17,46 +18,121 @@ bot = telebot.TeleBot(BOT_TOKEN)
 # Кэш авторизованных пользователей
 authorized_users = set()
 
-def load_authorized_users():
-    """Загружает список авторизованных пользователей из канала"""
+def get_channel_messages():
+    """Получает сообщения из канала"""
     try:
-        # Получаем обновления через API
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?limit=100"
+        # Получаем историю сообщений через API
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChat?chat_id={CHANNEL_ID}"
+        response = requests.get(url)
+        chat_data = response.json()
+        
+        if not chat_data.get('ok'):
+            logger.error(f"Ошибка при получении информации о канале: {chat_data}")
+            return []
+        
+        # Получаем сообщения из канала
+        messages = []
+        offset = 0
+        limit = 100  # Максимальное количество сообщений для получения
+        
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatHistory?chat_id={CHANNEL_ID}&limit={limit}&offset={offset}"
         response = requests.get(url)
         data = response.json()
         
         if not data.get('ok'):
-            logger.error(f"Ошибка при получении обновлений: {data}")
-            return
+            # Если getHistory не работает, пробуем использовать другой метод
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/forwardMessages?chat_id={BOT_TOKEN.split(':')[0]}&from_chat_id={CHANNEL_ID}&message_ids=1-100"
+            response = requests.get(url)
+            data = response.json()
+            
+            if not data.get('ok'):
+                # Если и это не работает, попробуем использовать getUpdates
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?limit=100"
+                response = requests.get(url)
+                data = response.json()
+                
+                if data.get('ok'):
+                    for update in data.get('result', []):
+                        if 'channel_post' in update and str(update['channel_post'].get('chat', {}).get('id')) == CHANNEL_ID:
+                            messages.append(update['channel_post'])
+            
+        return messages
         
-        # Перебираем все обновления и ищем сообщения из нужного канала
-        for update in data.get('result', []):
-            if 'channel_post' in update:
-                channel_post = update['channel_post']
-                if str(channel_post.get('chat', {}).get('id')) == CHANNEL_ID:
-                    if 'text' in channel_post:
+    except Exception as e:
+        logger.error(f"Ошибка при получении сообщений из канала: {e}")
+        return []
+
+def load_authorized_users():
+    """Загружает список авторизованных пользователей из канала"""
+    global authorized_users
+    authorized_users.clear()
+    
+    try:
+        # Альтернативный подход - использовать getMessage
+        for i in range(1, 101):  # Получаем 100 последних сообщений
+            try:
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/getMessage?chat_id={CHANNEL_ID}&message_id={i}"
+                response = requests.get(url)
+                data = response.json()
+                
+                if data.get('ok'):
+                    message = data.get('result', {})
+                    if 'text' in message:
                         # Ищем ID пользователей в формате "ID: НОМЕР"
-                        matches = re.findall(r'ID:\s*(\d+)', channel_post['text'])
+                        matches = re.findall(r'ID:\s*(\d+)', message['text'])
                         for match in matches:
                             authorized_users.add(int(match))
+            except:
+                continue
+        
+        # Если не получилось, используем другой подход
+        if not authorized_users:
+            # Получаем сообщения из канала через getUpdates
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?limit=100"
+            response = requests.get(url)
+            data = response.json()
+            
+            if data.get('ok'):
+                for update in data.get('result', []):
+                    if 'channel_post' in update:
+                        post = update['channel_post']
+                        if str(post.get('chat', {}).get('id')) == CHANNEL_ID and 'text' in post:
+                            # Ищем ID пользователей в формате "ID: НОМЕР"
+                            matches = re.findall(r'ID:\s*(\d+)', post['text'])
+                            for match in matches:
+                                authorized_users.add(int(match))
+        
+        logger.info(f"Загружено {len(authorized_users)} авторизованных пользователей: {authorized_users}")
     except Exception as e:
         logger.error(f"Ошибка при загрузке авторизованных пользователей: {e}")
+
+def check_user_authorized(user_id):
+    """Проверяет, авторизован ли пользователь"""
+    # Обновляем список авторизованных пользователей
+    if not authorized_users:
+        load_authorized_users()
+    
+    return user_id in authorized_users
 
 @bot.message_handler(commands=['start'])
 def start_command(message):
     user_id = message.from_user.id
     
-    # Если кэш авторизованных пользователей пуст, заполняем его
-    if not authorized_users:
-        load_authorized_users()
+    # Проверяем, авторизован ли пользователь
+    is_authorized = check_user_authorized(user_id)
+    logger.info(f"Пользователь {user_id} авторизован: {is_authorized}")
     
-    # Создаем инлайн клавиатуру
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    ru_button = types.InlineKeyboardButton("RU 🇷🇺", callback_data='lang_ru')
-    en_button = types.InlineKeyboardButton("EN 🇬🇧", callback_data='lang_en')
-    markup.add(ru_button, en_button)
-    
-    bot.send_message(message.chat.id, "Выберите язык / Choose language:", reply_markup=markup)
+    if is_authorized:
+        # Если пользователь уже авторизован, показываем соответствующее сообщение
+        bot.send_message(message.chat.id, "Вы уже авторизованы. Добро пожаловать! / You are already authorized. Welcome!")
+    else:
+        # Если пользователь не авторизован, предлагаем выбрать язык
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        ru_button = types.InlineKeyboardButton("RU 🇷🇺", callback_data='lang_ru')
+        en_button = types.InlineKeyboardButton("EN 🇬🇧", callback_data='lang_en')
+        markup.add(ru_button, en_button)
+        
+        bot.send_message(message.chat.id, "Выберите язык / Choose language:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('lang_'))
 def language_callback(call):
@@ -68,18 +144,19 @@ def language_callback(call):
     # Получаем выбранный язык
     language = call.data.split('_')[1].upper()
     
-    # Отправляем информацию в канал
-    user_info = f"New user:\nID: {user_id}\nUsername: @{username}\nName: {first_name} {last_name}\nLanguage: {language}"
-    try:
-        bot.send_message(CHANNEL_ID, user_info)
-        logger.info(f"Информация о пользователе отправлена в канал: {user_info}")
-    except Exception as e:
-        logger.error(f"Ошибка при отправке информации в канал: {e}")
+    # Проверяем, авторизован ли пользователь
+    is_authorized = check_user_authorized(user_id)
     
-    # Проверяем авторизацию
-    is_authorized = user_id in authorized_users
+    # Если пользователь не авторизован, отправляем информацию в канал
+    if not is_authorized:
+        user_info = f"New user:\nID: {user_id}\nUsername: @{username}\nName: {first_name} {last_name}\nLanguage: {language}"
+        try:
+            bot.send_message(CHANNEL_ID, user_info)
+            logger.info(f"Информация о новом пользователе отправлена в канал: {user_info}")
+        except Exception as e:
+            logger.error(f"Ошибка при отправке информации в канал: {e}")
     
-    # Отвечаем пользователю в зависимости от выбора языка
+    # Отвечаем пользователю в зависимости от выбора языка и статуса авторизации
     if language == 'RU':
         if is_authorized:
             response = "Вы выбрали русский язык. Добро пожаловать!"
@@ -103,7 +180,14 @@ def main():
     load_authorized_users()
     
     logger.info(f"Бот запущен. Загружено {len(authorized_users)} авторизованных пользователей.")
-    bot.infinity_polling()
+    
+    # Добавляем таймер для периодического обновления списка авторизованных пользователей
+    while True:
+        try:
+            bot.polling(none_stop=True, interval=0, timeout=60)
+        except Exception as e:
+            logger.error(f"Ошибка в цикле бота: {e}")
+            time.sleep(10)
 
 if __name__ == "__main__":
     main()
