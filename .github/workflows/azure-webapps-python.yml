@@ -35,5 +35,5 @@ jobs:
         sed -i "s/BOT_TOKEN = \".*\"/BOT_TOKEN = \"${BOT_TOKEN}\"/g" hoh.py
         sed -i "s/CHANNEL_ID = \".*\"/CHANNEL_ID = \"${CHANNEL_ID}\"/g" hoh.py
         sed -i "s/JSONBIN_API_KEY = \"YOUR_JSONBIN_API_KEY\"/JSONBIN_API_KEY = \"${JSONBIN_API_KEY}\"/g" hoh.py
-        sed -i "s/JSONBIN_BIN_ID = \"YOUR_JSONBIN_BIN_ID\"/JSONBIN_BIN_ID = \"${JSONBIN_BIN_ID}\"/g" hoh.py
-        python hoh.py
+        sed -i "s/JSONBIN_BIN_ID = \"YOUR_JSONBIN_BIN_ID\"/JSONBIN_BIN_ID = \"${JSONBIN_BIN_ID}\"/g" bot.py
+        python bot.py
