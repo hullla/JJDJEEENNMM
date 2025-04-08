@@ -2,9 +2,8 @@ import telebot
 from telebot import types
 import logging
 import time
-import datetime
 import requests
-import json
+from datetime import datetime
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -12,96 +11,100 @@ logger = logging.getLogger(__name__)
 
 # Инициализация бота
 BOT_TOKEN = "7714752663:AAGV_XL4IfAjZ_o5vqyf29IJlA5scv1BD6c"
-CHANNEL_ID = "-1001948875251"
-JSONBIN_API_KEY = "$2a$10$s9kk4994hSgcahu7WYiM/uEsPNVF5eCNpeiz6SkThOhKKwhc6yX0W"
-JSONBIN_BIN_ID = "$2a$10$C7S.J33A66P0gXo.q0ELpeAbjACmEGCVWc9o3Wv02YMxTVuwRxTRW"
+CHANNEL_ID = "-1001948875251"  # Оставляем для обратной совместимости
+JSONBIN_API_KEY = "$2a$10$hT79uCEaJENfQBZ7576aL.upUOtnPqJZX53sWcln0HZib/bgs.8.u"
+JSONBIN_BIN_ID = "67f532028a456b796684e974"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Кэш базы данных пользователей
-user_database_cache = {"users": []}
+# Локальный кэш данных пользователей для минимизации API-запросов
+users_cache = None
 last_cache_update = 0
-CACHE_TIMEOUT = 60  # Время жизни кэша в секундах
+CACHE_TTL = 300  # Время жизни кэша в секундах (5 минут)
 
-def get_user_database(force_update=False):
-    """Получает базу данных пользователей из JSONBin или из кэша"""
-    global user_database_cache, last_cache_update
+def get_users_data(force_update=False):
+    """Получает данные всех пользователей из JSONBin.io с кэшированием"""
+    global users_cache, last_cache_update
     
-    # Проверяем нужно ли обновить кэш
     current_time = time.time()
-    if not force_update and (current_time - last_cache_update < CACHE_TIMEOUT):
-        return user_database_cache
+    
+    # Используем кэш, если он актуален и не требуется принудительное обновление
+    if not force_update and users_cache is not None and (current_time - last_cache_update) < CACHE_TTL:
+        return users_cache
     
     try:
-        url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}/latest"
+        url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}"
         headers = {
             "X-Master-Key": JSONBIN_API_KEY
         }
         response = requests.get(url, headers=headers)
         
         if response.status_code == 200:
-            user_database_cache = response.json()['record']
+            users_data = response.json().get('record', {}).get('users', [])
+            # Обновляем кэш
+            users_cache = users_data
             last_cache_update = current_time
-            return user_database_cache
+            return users_data
         else:
-            logger.error(f"Не удалось получить данные: {response.text}")
-            return user_database_cache
+            logger.error(f"Ошибка получения данных из JSONBin: {response.status_code}, {response.text}")
+            return users_cache or []  # Возвращаем старый кэш, если он есть
     except Exception as e:
-        logger.error(f"Ошибка при получении данных: {e}")
-        return user_database_cache
+        logger.error(f"Ошибка при получении данных из JSONBin: {e}")
+        return users_cache or []  # Возвращаем старый кэш, если он есть
 
-def update_user_database(user_data):
-    """Обновляет базу данных пользователей в JSONBin"""
+def update_users_data(users_data):
+    """Обновляет данные пользователей в JSONBin.io и кэш"""
+    global users_cache, last_cache_update
+    
     try:
-        database = get_user_database()
-        user_exists = False
-        
-        # Проверяем, есть ли уже пользователь в базе
-        for i, user in enumerate(database.get("users", [])):
-            if user.get("id") == user_data.get("id"):
-                database["users"][i] = user_data
-                user_exists = True
-                break
-        
-        # Если пользователя нет, добавляем его
-        if not user_exists:
-            if "users" not in database:
-                database["users"] = []
-            database["users"].append(user_data)
-        
-        # Обновляем локальный кэш
-        global user_database_cache
-        user_database_cache = database
-        
-        # Отправляем обновленную базу в JSONBin
         url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}"
         headers = {
-            "Content-Type": "application/json",
-            "X-Master-Key": JSONBIN_API_KEY
+            "X-Master-Key": JSONBIN_API_KEY,
+            "Content-Type": "application/json"
         }
-        response = requests.put(url, json=database, headers=headers)
+        data = {"users": users_data}
+        response = requests.put(url, json=data, headers=headers)
         
         if response.status_code == 200:
-            logger.info(f"Данные обновлены для пользователя {user_data.get('id')}")
+            # Обновляем кэш после успешного обновления в JSONBin
+            users_cache = users_data
+            last_cache_update = time.time()
             return True
         else:
-            logger.error(f"Ошибка обновления данных: {response.text}")
+            logger.error(f"Ошибка обновления данных в JSONBin: {response.status_code}, {response.text}")
             return False
     except Exception as e:
-        logger.error(f"Ошибка при обновлении данных: {e}")
+        logger.error(f"Ошибка при обновлении данных в JSONBin: {e}")
         return False
 
 def is_user_authorized(user_id):
-    """Проверяет, зарегистрирован ли пользователь в базе, используя кэш"""
-    try:
-        database = get_user_database()
-        for user in database.get("users", []):
-            if user.get("id") == user_id:
-                return True
-        return False
-    except Exception as e:
-        logger.error(f"Ошибка проверки авторизации: {e}")
-        return False
+    """Проверяет, авторизован ли пользователь, ищет его ID в кэше данных JSONBin"""
+    users = get_users_data()
+    
+    for user in users:
+        if user.get('user_id') == user_id:
+            return True
+    
+    return False
+
+def register_user(user_id, language):
+    """Регистрирует нового пользователя в JSONBin"""
+    users = get_users_data()
+    
+    # Проверяем, существует ли пользователь
+    for user in users:
+        if user.get('user_id') == user_id:
+            return True  # Пользователь уже зарегистрирован
+    
+    # Добавляем нового пользователя
+    new_user = {
+        "user_id": user_id,
+        "language": language,
+        "registration_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    
+    users.append(new_user)
+    return update_users_data(users)
 
 @bot.message_handler(commands=['start'])
 def start_command(message):
@@ -124,7 +127,7 @@ def start_command(message):
         time.sleep(0.07)
         bot.edit_message_text(emoji, chat_id, msg.message_id)
 
-    # Проверка авторизации через кэш
+    # Проверка авторизации через кэш данных JSONBin
     if is_user_authorized(user_id):
         bot.edit_message_text("✅ Вы авторизованы!", chat_id, msg.message_id)
     else:
@@ -139,29 +142,18 @@ def language_callback(call):
     user_id = call.from_user.id
     language = call.data.split('_')[1].upper()
 
-    # Финальная проверка перед отправкой
+    # Финальная проверка перед регистрацией
     if is_user_authorized(user_id):
         response = "🔐 Вы уже в системе!" if language == 'RU' else "🔐 Already registered!"
         bot.edit_message_text(response, call.message.chat.id, call.message.message_id)
         return
 
-    # Сохранение данных в JSONBin
+    # Регистрация пользователя в JSONBin
     try:
-        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        user_data = {
-            "id": user_id,
-            "language": language,
-            "registration_time": current_time
-        }
-        
-        success = update_user_database(user_data)
-        
-        if success:
-            # Отправляем уведомление в канал, если нужно
-            bot.send_message(CHANNEL_ID, f"ID: {user_id}\nLanguage: {language}\nTime: {current_time}")
+        if register_user(user_id, language):
             response = "📬 Запрос отправлен!" if language == 'RU' else "📬 Request submitted!"
         else:
-            response = "⚠️ Ошибка при сохранении" if language == 'RU' else "⚠️ Error saving data"
+            response = "⚠️ Ошибка регистрации" if language == 'RU' else "⚠️ Registration error"
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         response = "⚠️ Ошибка связи" if language == 'RU' else "⚠️ Connection error"
@@ -169,14 +161,9 @@ def language_callback(call):
     bot.edit_message_text(response, call.message.chat.id, call.message.message_id)
 
 def main():
-    # Инициализируем кэш при запуске
-    try:
-        get_user_database(force_update=True)
-        logger.info("База данных пользователей загружена в кэш")
-    except Exception as e:
-        logger.error(f"Ошибка загрузки базы данных: {e}")
-    
-    logger.info(f"Бот запущен.")
+    # При запуске бота, сразу загружаем данные пользователей в кэш
+    get_users_data(force_update=True)
+    logger.info(f"Бот запущен. Кэш пользователей инициализирован.")
     bot.infinity_polling()
 
 if __name__ == "__main__":
