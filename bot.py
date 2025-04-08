@@ -14,7 +14,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Инициализация бота
-BOT_TOKEN = "7671924788:AAEEDhZ7xBXUXESOHEq-hLsetlCSjK3hMY0"
+BOT_TOKEN = "7671924788:AAGGhX0SoXKlBn816Yn25kI4aL4z4o-kmsw"
 CHANNEL_ID = "-1001948875251"
 
 bot = telebot.TeleBot(BOT_TOKEN)
