@@ -1,14 +1,15 @@
 import telebot
 from telebot import types
 import logging
+import time
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Инициализация бота
-BOT_TOKEN = "7671924788:AAFYL_iYxW99UE2sj90RpK13AjgDJSKtHFo"  # Будет заменено через GitHub Secrets
-CHANNEL_ID = "-1001948875251"  # Будет заменено через GitHub Secrets
+BOT_TOKEN = "7671924788:AAHHnq5uD7IzAwdAFRwwzqlKnp-6VPVvCi0"
+CHANNEL_ID = "-1001948875251"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -24,52 +25,55 @@ def is_user_authorized(user_id):
 @bot.message_handler(commands=['start'])
 def start_command(message):
     user_id = message.from_user.id
-    is_authorized = is_user_authorized(user_id)
-    logger.info(f"Пользователь {user_id} авторизован: {is_authorized}")
-
-    if is_authorized:
-        bot.send_message(message.chat.id, "Вы уже авторизованы!")
-        return
-
-    # Создаем инлайн клавиатуру
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    ru_button = types.InlineKeyboardButton("RU 🇷🇺", callback_data='lang_ru')
-    en_button = types.InlineKeyboardButton("EN 🇬🇧", callback_data='lang_en')
-    markup.add(ru_button, en_button)
+    chat_id = message.chat.id
     
-    bot.send_message(message.chat.id, "Выберите язык / Choose language:", reply_markup=markup)
+    # Отправляем анимацию загрузки
+    load_emojis = [
+        "~(˘▾˘~)",
+        "~(˘▾˘~)~(˘▾˘~)",
+        "~(˘▾˘~)~(˘▾˘~)~(˘▾˘~)",
+        "(◡‿◡✿)(◡‿◡✿)(◡‿◡✿)(◡‿◡✿)",
+        "(◕‿↼)(◕‿↼)(◕‿↼)(◕‿↼)(◕‿↼)"
+    ]
+    
+    msg = bot.send_message(chat_id, load_emojis[0])
+    
+    # Анимация загрузки
+    for emoji in load_emojis[1:]:
+        time.sleep(0.07)  # Общая длительность анимации ~0.3 сек
+        bot.edit_message_text(emoji, chat_id, msg.message_id)
+    
+    # Проверяем авторизацию
+    is_authorized = is_user_authorized(user_id)
+    
+    if is_authorized:
+        bot.edit_message_text("✅ Вы уже авторизованы!", chat_id, msg.message_id)
+    else:
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        ru_button = types.InlineKeyboardButton("RU 🇷🇺", callback_data='lang_ru')
+        en_button = types.InlineKeyboardButton("EN 🇬🇧", callback_data='lang_en')
+        markup.add(ru_button, en_button)
+        bot.edit_message_text("Выберите язык / Choose language:", chat_id, msg.message_id, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('lang_'))
 def language_callback(call):
     user_id = call.from_user.id
     language = call.data.split('_')[1].upper()
     
-    # Проверяем авторизацию еще раз
     if is_user_authorized(user_id):
-        bot.edit_message_text(chat_id=call.message.chat.id,
-                             message_id=call.message.message_id,
-                             text="Вы уже авторизованы!" if language == 'RU' else "You're already authorized!",
-                             reply_markup=None)
+        response = "Вы уже авторизованы!" if language == 'RU' else "You're already authorized!"
+        bot.edit_message_text(response, call.message.chat.id, call.message.message_id)
         return
-
-    # Отправляем информацию в канал
+    
     user_info = f"ID: {user_id}\nLanguage: {language}"
     try:
         bot.send_message(CHANNEL_ID, user_info)
-        logger.info(f"Информация о пользователе отправлена в канал: {user_info}")
-        response_ru = "Вы выбрали русский язык. Ожидайте авторизации администратором."
-        response_en = "You've selected English. Please wait for admin authorization."
+        response = "✅ Данные отправлены! Ожидайте авторизации." if language == 'RU' else "✅ Data sent! Please wait for authorization."
     except Exception as e:
-        logger.error(f"Ошибка при отправке информации в канал: {e}")
-        response_ru = "Ошибка отправки данных. Попробуйте позже."
-        response_en = "Data sending error. Please try again later."
-
-    # Отвечаем пользователю
-    response = response_ru if language == 'RU' else response_en
-    bot.edit_message_text(chat_id=call.message.chat.id,
-                         message_id=call.message.message_id,
-                         text=response,
-                         reply_markup=None)
+        logger.error(f"Ошибка отправки: {e}")
+        response = "🚫 Ошибка отправки. Попробуйте позже." if language == 'RU' else "🚫 Sending error. Please try again."
+    
+    bot.edit_message_text(response, call.message.chat.id, call.message.message_id)
 
 def main():
     logger.info(f"Бот запущен.")
