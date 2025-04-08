@@ -3,6 +3,7 @@ from telebot import types
 import logging
 import time
 import re
+import requests
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -15,19 +16,29 @@ CHANNEL_ID = "-1001948875251"
 bot = telebot.TeleBot(BOT_TOKEN)
 
 def is_user_authorized(user_id):
-    """Проверяет наличие ID пользователя в сообщениях канала"""
+    """Ищет ID пользователя во всех сообщениях канала через поиск"""
     try:
-        # Получаем последние 100 сообщений из канала
-        messages = bot.get_chat_history(chat_id=CHANNEL_ID, limit=100)
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/searchMessages"
+        payload = {
+            "chat_id": CHANNEL_ID,
+            "query": str(user_id),
+            "limit": 100
+        }
         
-        # Ищем ID пользователя в тексте сообщений
-        for message in messages:
-            if message.text and re.search(fr'ID:\s*{user_id}\b', message.text):
-                return True
+        response = requests.post(url, json=payload).json()
+        
+        if not response.get('ok'):
+            logger.error(f"Ошибка поиска: {response}")
+            return False
+            
+        for message in response.get('result', {}).get('messages', []):
+            if 'content' in message and 'text' in message['content']:
+                if re.search(fr'ID:\s*{user_id}\b', message['content']['text']):
+                    return True
         return False
         
     except Exception as e:
-        logger.error(f"Ошибка проверки авторизации: {e}")
+        logger.error(f"Ошибка проверки: {e}")
         return False
 
 @bot.message_handler(commands=['start'])
@@ -51,11 +62,9 @@ def start_command(message):
         time.sleep(0.07)
         bot.edit_message_text(emoji, chat_id, msg.message_id)
     
-    # Проверка авторизации в реальном времени
-    is_authorized = is_user_authorized(user_id)
-    
-    if is_authorized:
-        bot.edit_message_text("✅ Доступ разрешен!", chat_id, msg.message_id)
+    # Проверка авторизации через поиск
+    if is_user_authorized(user_id):
+        bot.edit_message_text("✅ Вы авторизованы!", chat_id, msg.message_id)
     else:
         markup = types.InlineKeyboardMarkup(row_width=2)
         ru_button = types.InlineKeyboardButton("RU 🇷🇺", callback_data='lang_ru')
@@ -68,20 +77,20 @@ def language_callback(call):
     user_id = call.from_user.id
     language = call.data.split('_')[1].upper()
     
-    # Проверяем актуальный статус перед отправкой
+    # Финальная проверка перед отправкой
     if is_user_authorized(user_id):
-        response = "🔒 Вы уже авторизованы!" if language == 'RU' else "🔒 You're already authorized!"
+        response = "🔐 Вы уже в системе!" if language == 'RU' else "🔐 Already registered!"
         bot.edit_message_text(response, call.message.chat.id, call.message.message_id)
         return
     
-    # Отправляем данные в канал
+    # Отправка данных
     try:
         user_info = f"ID: {user_id}\nLanguage: {language}"
         bot.send_message(CHANNEL_ID, user_info)
-        response = "📩 Запрос отправлен!" if language == 'RU' else "📩 Request sent!"
+        response = "📬 Запрос отправлен!" if language == 'RU' else "📬 Request submitted!"
     except Exception as e:
-        logger.error(f"Ошибка отправки: {e}")
-        response = "🚫 Ошибка отправки" if language == 'RU' else "🚫 Sending error"
+        logger.error(f"Ошибка: {e}")
+        response = "⚠️ Ошибка связи" if language == 'RU' else "⚠️ Connection error"
     
     bot.edit_message_text(response, call.message.chat.id, call.message.message_id)
 
