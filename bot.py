@@ -24,8 +24,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 # Локальный кэш данных пользователей для минимизации API-запросов
 users_cache = None
 last_cache_update = 0
-CACHE_TTL = 7200  # Увеличиваем время жизни кэша до 2 часов
-LAST_ACCESS_UPDATE_INTERVAL = 6 * 3600  # 6 часов в секундах
+CACHE_TTL = 7200  # Время жизни кэша в секундах (2 часа)
 
 def initialize_jsonbin():
     """Проверяет и инициализирует структуру в JSONBin, если она отсутствует"""
@@ -130,8 +129,8 @@ def is_user_authorized(user_id):
 
         for user in users:
             if isinstance(user, dict) and user.get('user_id') == user_id:
-                # Записываем активность пользователя
-                add_user_activity(user_id)
+                # Обновляем время последнего захода и записываем использование
+                record_user_activity(user_id)
                 logger.debug(f"Пользователь {user_id} найден в базе")
                 return True
 
@@ -141,54 +140,57 @@ def is_user_authorized(user_id):
         logger.error(f"Ошибка при проверке авторизации: {e}")
         return False
 
-def add_user_activity(user_id):
-    """Добавляет запись об активности пользователя и обновляет last_access, если прошло больше 6 часов"""
+def record_user_activity(user_id):
+    """Записывает активность пользователя без обновления last_access, если прошло менее 6 часов"""
     try:
         users = get_users_data()
         if users is None:
-            logger.error("Не удалось получить данные пользователей для обновления активности")
+            logger.error("Не удалось получить данные пользователей для записи активности")
             return False
 
-        current_time = datetime.now()
+        now = datetime.now()
+        current_time = now.strftime("%Y-%m-%d %H:%M:%S")
         updated = False
 
         for user in users:
             if isinstance(user, dict) and user.get('user_id') == user_id:
-                # Инициализируем список активности, если его еще нет
-                if 'activity_dates' not in user:
-                    user['activity_dates'] = []
+                # Инициализируем историю использования, если её нет
+                if 'usage_history' not in user:
+                    user['usage_history'] = []
                 
-                # Добавляем текущую дату активности
-                user['activity_dates'].append(current_time.strftime("%Y-%m-%d %H:%M:%S"))
+                # Добавляем текущее время в историю использования
+                user['usage_history'].append(current_time)
                 
                 # Проверяем, нужно ли обновлять last_access
                 last_access_str = user.get('last_access')
+                update_last_access = True
+                
                 if last_access_str:
                     try:
                         last_access = datetime.strptime(last_access_str, "%Y-%m-%d %H:%M:%S")
-                        time_diff = (current_time - last_access).total_seconds()
-                        
-                        # Обновляем last_access только если прошло больше 6 часов
-                        if time_diff > LAST_ACCESS_UPDATE_INTERVAL:
-                            user['last_access'] = current_time.strftime("%Y-%m-%d %H:%M:%S")
+                        time_diff = now - last_access
+                        # Если прошло менее 6 часов, не обновляем last_access
+                        if time_diff.total_seconds() < 6 * 3600:
+                            update_last_access = False
+                            logger.debug(f"Пропуск обновления времени доступа для {user_id}: прошло менее 6 часов")
                     except ValueError:
-                        # Если формат даты некорректный, просто обновляем
-                        user['last_access'] = current_time.strftime("%Y-%m-%d %H:%M:%S")
-                else:
-                    user['last_access'] = current_time.strftime("%Y-%m-%d %H:%M:%S")
+                        pass
+                
+                if update_last_access:
+                    user['last_access'] = current_time
                 
                 updated = True
                 break
 
         if updated:
             result = update_users_data(users)
-            logger.debug(f"Обновление активности для пользователя {user_id}: {result}")
+            logger.debug(f"Обновление активности пользователя {user_id}: {result}")
             return result
         
-        logger.debug(f"Пользователь {user_id} не найден для обновления активности")
+        logger.debug(f"Пользователь {user_id} не найден для записи активности")
         return False
     except Exception as e:
-        logger.error(f"Ошибка при обновлении активности: {e}")
+        logger.error(f"Ошибка при записи активности пользователя: {e}")
         return False
 
 def register_user(user_id, language):
@@ -203,8 +205,8 @@ def register_user(user_id, language):
         for user in users:
             if isinstance(user, dict) and user.get('user_id') == user_id:
                 logger.debug(f"Пользователь {user_id} уже зарегистрирован")
-                # Добавляем запись об активности
-                add_user_activity(user_id)
+                # Записываем активность
+                record_user_activity(user_id)
                 return True  # Пользователь уже зарегистрирован
 
         # Добавляем нового пользователя
@@ -214,7 +216,7 @@ def register_user(user_id, language):
             "language": language,
             "registration_time": now,
             "last_access": now,
-            "activity_dates": [now]  # Инициализируем список активности
+            "usage_history": [now]  # Инициализируем историю использования
         }
 
         logger.debug(f"Регистрируем нового пользователя: {new_user}")
@@ -243,6 +245,115 @@ def get_user_stats(user_id):
         logger.error(f"Ошибка при получении статистики пользователя: {e}")
         return None
 
+def get_registration_stats():
+    """Возвращает статистику регистраций за разные периоды времени"""
+    try:
+        users = get_users_data()
+        if users is None:
+            logger.error("Не удалось получить данные пользователей для статистики регистраций")
+            return None
+
+        now = datetime.now()
+        day_ago = now - timedelta(days=1)
+        week_ago = now - timedelta(days=7)
+        month_ago = now - timedelta(days=30)
+
+        # Счетчики для разных периодов
+        last_24h = 0
+        last_week = 0
+        last_month = 0
+
+        for user in users:
+            if not isinstance(user, dict) or 'registration_time' not in user:
+                continue
+            
+            try:
+                reg_time = datetime.strptime(user['registration_time'], "%Y-%m-%d %H:%M:%S")
+                
+                # Последние 24 часа
+                if reg_time >= day_ago:
+                    last_24h += 1
+                
+                # Последняя неделя
+                if reg_time >= week_ago:
+                    last_week += 1
+                
+                # Последний месяц
+                if reg_time >= month_ago:
+                    last_month += 1
+            
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Ошибка при парсинге даты регистрации: {e}")
+                continue
+
+        return {
+            "last_24h": last_24h,
+            "last_week": last_week,
+            "last_month": last_month
+        }
+    except Exception as e:
+        logger.error(f"Ошибка при получении статистики регистраций: {e}")
+        return None
+
+def get_usage_stats():
+    """Возвращает статистику использования бота за разные периоды времени"""
+    try:
+        users = get_users_data()
+        if users is None:
+            logger.error("Не удалось получить данные пользователей для статистики использования")
+            return None
+
+        now = datetime.now()
+        day_ago = now - timedelta(days=1)
+        three_days_ago = now - timedelta(days=3)
+        week_ago = now - timedelta(days=7)
+        month_ago = now - timedelta(days=30)
+
+        # Уникальные пользователи в разные периоды
+        users_24h = set()
+        users_3d = set()
+        users_week = set()
+        users_month = set()
+
+        for user in users:
+            if not isinstance(user, dict):
+                continue
+            
+            user_id = user.get('user_id')
+            if not user_id:
+                continue
+            
+            # Проверяем историю использования
+            usage_history = user.get('usage_history', [])
+            for usage_time_str in usage_history:
+                try:
+                    usage_time = datetime.strptime(usage_time_str, "%Y-%m-%d %H:%M:%S")
+                    
+                    if usage_time >= day_ago:
+                        users_24h.add(user_id)
+                    
+                    if usage_time >= three_days_ago:
+                        users_3d.add(user_id)
+                    
+                    if usage_time >= week_ago:
+                        users_week.add(user_id)
+                    
+                    if usage_time >= month_ago:
+                        users_month.add(user_id)
+                
+                except ValueError:
+                    continue
+
+        return {
+            "last_24h": len(users_24h),
+            "last_3d": len(users_3d),
+            "last_week": len(users_week),
+            "last_month": len(users_month)
+        }
+    except Exception as e:
+        logger.error(f"Ошибка при получении статистики использования: {e}")
+        return None
+
 def get_global_stats():
     """Получает общую статистику всех пользователей"""
     try:
@@ -251,116 +362,38 @@ def get_global_stats():
             logger.error("Не удалось получить данные пользователей для общей статистики")
             return None
 
-        now = datetime.now()
-        day_ago = now - timedelta(days=1)
-        week_ago = now - timedelta(days=7)
-        month_ago = now - timedelta(days=30)
-        three_days_ago = now - timedelta(days=3)
-        
-        # Исключаем из статистики пользователей, активных в последние 6 часов
-        six_hours_ago = now - timedelta(hours=6)
-        
-        total_users = 0
+        total_users = len(users)
         ru_users = 0
         en_users = 0
-        
-        # Счетчики для регистраций
-        users_registered_day = 0
-        users_registered_week = 0
-        users_registered_month = 0
-        
-        # Счетчики для активности
-        users_active_day = 0
-        users_active_three_days = 0
-        users_active_week = 0
-        users_active_month = 0
 
         for user in users:
             if isinstance(user, dict):
-                # Проверяем, не был ли пользователь активен в последние 6 часов
-                last_access_str = user.get('last_access')
-                skip_user = False
-                
-                if last_access_str:
-                    try:
-                        last_access = datetime.strptime(last_access_str, "%Y-%m-%d %H:%M:%S")
-                        if last_access > six_hours_ago:
-                            # Пропускаем этого пользователя в статистике
-                            skip_user = True
-                    except ValueError:
-                        pass
-                
-                if skip_user:
-                    continue
-                
-                # Общая статистика
-                total_users += 1
                 if user.get('language') == 'RU':
                     ru_users += 1
                 elif user.get('language') == 'EN':
                     en_users += 1
-                
-                # Статистика регистраций (накопительная)
-                reg_time_str = user.get('registration_time')
-                if reg_time_str:
-                    try:
-                        reg_time = datetime.strptime(reg_time_str, "%Y-%m-%d %H:%M:%S")
-                        if reg_time > day_ago:
-                            users_registered_day += 1
-                        if reg_time > week_ago:
-                            users_registered_week += 1
-                        if reg_time > month_ago:
-                            users_registered_month += 1
-                    except ValueError:
-                        pass
-                
-                # Статистика активности
-                activity_dates = user.get('activity_dates', [])
-                if activity_dates:
-                    # Определяем, был ли пользователь активен за разные периоды (без дублирования)
-                    was_active_day = False
-                    was_active_three_days = False
-                    was_active_week = False
-                    was_active_month = False
-                    
-                    for date_str in activity_dates:
-                        try:
-                            activity_date = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
-                            
-                            if activity_date > day_ago and not was_active_day:
-                                users_active_day += 1
-                                was_active_day = True
-                                
-                            if activity_date > three_days_ago and not was_active_three_days:
-                                users_active_three_days += 1
-                                was_active_three_days = True
-                                
-                            if activity_date > week_ago and not was_active_week:
-                                users_active_week += 1
-                                was_active_week = True
-                                
-                            if activity_date > month_ago and not was_active_month:
-                                users_active_month += 1
-                                was_active_month = True
-                                
-                            # Если все флаги активности установлены, можно прервать цикл
-                            if was_active_day and was_active_three_days and was_active_week and was_active_month:
-                                break
-                                
-                        except ValueError:
-                            pass
+
+        # Получаем статистику регистраций
+        reg_stats = get_registration_stats() or {
+            "last_24h": 0,
+            "last_week": 0,
+            "last_month": 0
+        }
+        
+        # Получаем статистику использования
+        usage_stats = get_usage_stats() or {
+            "last_24h": 0,
+            "last_3d": 0,
+            "last_week": 0,
+            "last_month": 0
+        }
 
         return {
             "total_users": total_users,
             "ru_users": ru_users,
             "en_users": en_users,
-            "users_registered_day": users_registered_day,
-            "users_registered_week": users_registered_week,
-            "users_registered_month": users_registered_month,
-            "users_active_day": users_active_day,
-            "users_active_three_days": users_active_three_days,
-            "users_active_week": users_active_week,
-            "users_active_month": users_active_month
+            "registrations": reg_stats,
+            "usage": usage_stats
         }
     except Exception as e:
         logger.error(f"Ошибка при получении общей статистики: {e}")
@@ -440,19 +473,22 @@ def stats_command(message):
                 f"🌐 Язык: {user_stats.get('language')}\n"
                 f"📅 Дата регистрации: {user_stats.get('registration_time')}\n"
                 f"⏱ Последний вход: {user_stats.get('last_access')}\n\n"
+                
                 f"📈 *Общая статистика:*\n"
                 f"👥 Всего пользователей: {global_stats['total_users']}\n"
                 f"🇷🇺 Пользователей RU: {global_stats['ru_users']}\n"
                 f"🇬🇧 Пользователей EN: {global_stats['en_users']}\n\n"
-                f"📊 *Регистрации:*\n"
-                f"📆 За 24 часа: {global_stats['users_registered_day']}\n"
-                f"📆 За 7 дней: {global_stats['users_registered_week']}\n"
-                f"📆 За 30 дней: {global_stats['users_registered_month']}\n\n"
-                f"👥 *Активные пользователи:*\n"
-                f"⏰ За 24 часа: {global_stats['users_active_day']}\n"
-                f"⏰ За 3 дня: {global_stats['users_active_three_days']}\n"
-                f"⏰ За 7 дней: {global_stats['users_active_week']}\n"
-                f"⏰ За 30 дней: {global_stats['users_active_month']}"
+                
+                f"📊 *Новые регистрации:*\n"
+                f"• За 24 часа: {global_stats['registrations']['last_24h']}\n"
+                f"• За неделю: {global_stats['registrations']['last_week']}\n"
+                f"• За месяц: {global_stats['registrations']['last_month']}\n\n"
+                
+                f"📱 *Активные пользователи:*\n"
+                f"• За 24 часа: {global_stats['usage']['last_24h']}\n"
+                f"• За 3 дня: {global_stats['usage']['last_3d']}\n"
+                f"• За неделю: {global_stats['usage']['last_week']}\n"
+                f"• За месяц: {global_stats['usage']['last_month']}"
             )
         else:  # EN
             message_text = (
@@ -461,19 +497,22 @@ def stats_command(message):
                 f"🌐 Language: {user_stats.get('language')}\n"
                 f"📅 Registration date: {user_stats.get('registration_time')}\n"
                 f"⏱ Last access: {user_stats.get('last_access')}\n\n"
+                
                 f"📈 *Global statistics:*\n"
                 f"👥 Total users: {global_stats['total_users']}\n"
                 f"🇷🇺 RU users: {global_stats['ru_users']}\n"
                 f"🇬🇧 EN users: {global_stats['en_users']}\n\n"
-                f"📊 *Registrations:*\n"
-                f"📆 Last 24 hours: {global_stats['users_registered_day']}\n"
-                f"📆 Last 7 days: {global_stats['users_registered_week']}\n"
-                f"📆 Last 30 days: {global_stats['users_registered_month']}\n\n"
-                f"👥 *Active users:*\n"
-                f"⏰ Last 24 hours: {global_stats['users_active_day']}\n"
-                f"⏰ Last 3 days: {global_stats['users_active_three_days']}\n"
-                f"⏰ Last 7 days: {global_stats['users_active_week']}\n"
-                f"⏰ Last 30 days: {global_stats['users_active_month']}"
+                
+                f"📊 *New registrations:*\n"
+                f"• Last 24 hours: {global_stats['registrations']['last_24h']}\n"
+                f"• Last week: {global_stats['registrations']['last_week']}\n"
+                f"• Last month: {global_stats['registrations']['last_month']}\n\n"
+                
+                f"📱 *Active users:*\n"
+                f"• Last 24 hours: {global_stats['usage']['last_24h']}\n"
+                f"• Last 3 days: {global_stats['usage']['last_3d']}\n"
+                f"• Last week: {global_stats['usage']['last_week']}\n"
+                f"• Last month: {global_stats['usage']['last_month']}"
             )
 
         bot.send_message(chat_id, message_text, parse_mode="Markdown")
