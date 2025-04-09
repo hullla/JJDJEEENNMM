@@ -3,7 +3,7 @@ from telebot import types
 import logging
 import time
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 
 # Настройка более подробного логирования
@@ -24,7 +24,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 # Локальный кэш данных пользователей для минимизации API-запросов
 users_cache = None
 last_cache_update = 0
-CACHE_TTL = 300  # Время жизни кэша в секундах (5 минут)
+CACHE_TTL = 7200  # Время жизни кэша в секундах (2 часа вместо 5 минут)
 
 def initialize_jsonbin():
     """Проверяет и инициализирует структуру в JSONBin, если она отсутствует"""
@@ -129,8 +129,8 @@ def is_user_authorized(user_id):
 
         for user in users:
             if isinstance(user, dict) and user.get('user_id') == user_id:
-                # Обновляем время последнего захода
-                update_last_access(user_id)
+                # Обнаружена активность пользователя, но не обновляем last_access здесь
+                # Просто возвращаем, что пользователь авторизован
                 logger.debug(f"Пользователь {user_id} найден в базе")
                 return True
 
@@ -141,7 +141,10 @@ def is_user_authorized(user_id):
         return False
 
 def update_last_access(user_id):
-    """Обновляет время последнего захода пользователя"""
+    """
+    Обновляет время последнего захода пользователя, 
+    но только если прошло более 12 часов с последнего обновления
+    """
     try:
         users = get_users_data()
         if users is None:
@@ -149,9 +152,25 @@ def update_last_access(user_id):
             return False
 
         updated = False
+        current_time = datetime.now()
+        
         for user in users:
             if isinstance(user, dict) and user.get('user_id') == user_id:
-                user['last_access'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                # Проверяем, прошло ли 12 часов с последнего обновления
+                if 'last_access' in user:
+                    try:
+                        last_access_time = datetime.strptime(user['last_access'], "%Y-%m-%d %H:%M:%S")
+                        time_diff = current_time - last_access_time
+                        
+                        # Если прошло менее 12 часов, не обновляем время
+                        if time_diff.total_seconds() < 12 * 3600:
+                            logger.debug(f"Пропуск обновления last_access для {user_id} (прошло менее 12 часов)")
+                            return True
+                    except (ValueError, TypeError):
+                        # Если возникла ошибка при парсинге даты, обновляем время
+                        pass
+                
+                user['last_access'] = current_time.strftime("%Y-%m-%d %H:%M:%S")
                 updated = True
                 break
 
@@ -178,8 +197,7 @@ def register_user(user_id, language):
         for user in users:
             if isinstance(user, dict) and user.get('user_id') == user_id:
                 logger.debug(f"Пользователь {user_id} уже зарегистрирован")
-                # Обновляем время последнего захода
-                update_last_access(user_id)
+                # Не обновляем время последнего захода при проверке регистрации
                 return True  # Пользователь уже зарегистрирован
 
         # Добавляем нового пользователя
@@ -217,6 +235,46 @@ def get_user_stats(user_id):
         logger.error(f"Ошибка при получении статистики пользователя: {e}")
         return None
 
+def get_registration_stats():
+    """Получает статистику регистраций за последний месяц, неделю и день"""
+    try:
+        users = get_users_data()
+        if users is None:
+            logger.error("Не удалось получить данные пользователей для статистики регистраций")
+            return None
+
+        now = datetime.now()
+        day_count = 0
+        week_count = 0
+        month_count = 0
+
+        for user in users:
+            if isinstance(user, dict) and 'registration_time' in user:
+                try:
+                    reg_time = datetime.strptime(user['registration_time'], "%Y-%m-%d %H:%M:%S")
+                    time_diff = now - reg_time
+                    
+                    if time_diff.total_seconds() <= 24 * 3600:  # 24 часа
+                        day_count += 1
+                    
+                    if time_diff.total_seconds() <= 7 * 24 * 3600:  # 7 дней
+                        week_count += 1
+                    
+                    if time_diff.total_seconds() <= 30 * 24 * 3600:  # 30 дней
+                        month_count += 1
+                except (ValueError, TypeError):
+                    logger.warning(f"Некорректный формат даты регистрации: {user.get('registration_time')}")
+                    continue
+
+        return {
+            "day": day_count,
+            "week": week_count,
+            "month": month_count
+        }
+    except Exception as e:
+        logger.error(f"Ошибка при получении статистики регистраций: {e}")
+        return None
+
 def get_global_stats():
     """Получает общую статистику всех пользователей"""
     try:
@@ -236,10 +294,18 @@ def get_global_stats():
                 elif user.get('language') == 'EN':
                     en_users += 1
 
+        # Получаем статистику регистраций
+        reg_stats = get_registration_stats()
+        if reg_stats is None:
+            reg_stats = {"day": 0, "week": 0, "month": 0}
+
         return {
             "total_users": total_users,
             "ru_users": ru_users,
-            "en_users": en_users
+            "en_users": en_users,
+            "new_today": reg_stats["day"],
+            "new_week": reg_stats["week"],
+            "new_month": reg_stats["month"]
         }
     except Exception as e:
         logger.error(f"Ошибка при получении общей статистики: {e}")
@@ -322,7 +388,11 @@ def stats_command(message):
                 f"📈 *Общая статистика:*\n"
                 f"👥 Всего пользователей: {global_stats['total_users']}\n"
                 f"🇷🇺 Пользователей RU: {global_stats['ru_users']}\n"
-                f"🇬🇧 Пользователей EN: {global_stats['en_users']}"
+                f"🇬🇧 Пользователей EN: {global_stats['en_users']}\n\n"
+                f"🆕 *Новые регистрации:*\n"
+                f"📆 За месяц: {global_stats['new_month']}\n"
+                f"📅 За неделю: {global_stats['new_week']}\n"
+                f"🕒 За 24 часа: {global_stats['new_today']}"
             )
         else:  # EN
             message_text = (
@@ -334,7 +404,11 @@ def stats_command(message):
                 f"📈 *Global statistics:*\n"
                 f"👥 Total users: {global_stats['total_users']}\n"
                 f"🇷🇺 RU users: {global_stats['ru_users']}\n"
-                f"🇬🇧 EN users: {global_stats['en_users']}"
+                f"🇬🇧 EN users: {global_stats['en_users']}\n\n"
+                f"🆕 *New registrations:*\n"
+                f"📆 Monthly: {global_stats['new_month']}\n"
+                f"📅 Weekly: {global_stats['new_week']}\n"
+                f"🕒 Last 24h: {global_stats['new_today']}"
             )
 
         bot.send_message(chat_id, message_text, parse_mode="Markdown")
