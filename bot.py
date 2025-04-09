@@ -129,6 +129,8 @@ def is_user_authorized(user_id):
 
         for user in users:
             if isinstance(user, dict) and user.get('user_id') == user_id:
+                # Обновляем время последнего захода
+                update_last_access(user_id)
                 logger.debug(f"Пользователь {user_id} найден в базе")
                 return True
 
@@ -136,6 +138,32 @@ def is_user_authorized(user_id):
         return False
     except Exception as e:
         logger.error(f"Ошибка при проверке авторизации: {e}")
+        return False
+
+def update_last_access(user_id):
+    """Обновляет время последнего захода пользователя"""
+    try:
+        users = get_users_data()
+        if users is None:
+            logger.error("Не удалось получить данные пользователей для обновления времени последнего захода")
+            return False
+
+        updated = False
+        for user in users:
+            if isinstance(user, dict) and user.get('user_id') == user_id:
+                user['last_access'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                updated = True
+                break
+
+        if updated:
+            result = update_users_data(users)
+            logger.debug(f"Обновление времени последнего захода для пользователя {user_id}: {result}")
+            return result
+        
+        logger.debug(f"Пользователь {user_id} не найден для обновления времени последнего захода")
+        return False
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении времени последнего захода: {e}")
         return False
 
 def register_user(user_id, language):
@@ -150,13 +178,17 @@ def register_user(user_id, language):
         for user in users:
             if isinstance(user, dict) and user.get('user_id') == user_id:
                 logger.debug(f"Пользователь {user_id} уже зарегистрирован")
+                # Обновляем время последнего захода
+                update_last_access(user_id)
                 return True  # Пользователь уже зарегистрирован
 
         # Добавляем нового пользователя
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         new_user = {
             "user_id": user_id,
             "language": language,
-            "registration_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "registration_time": now,
+            "last_access": now
         }
 
         logger.debug(f"Регистрируем нового пользователя: {new_user}")
@@ -167,6 +199,51 @@ def register_user(user_id, language):
     except Exception as e:
         logger.error(f"Ошибка при регистрации пользователя: {e}")
         return False
+
+def get_user_stats(user_id):
+    """Получает статистику для конкретного пользователя"""
+    try:
+        users = get_users_data()
+        if users is None:
+            logger.error("Не удалось получить данные пользователей для статистики")
+            return None
+
+        for user in users:
+            if isinstance(user, dict) and user.get('user_id') == user_id:
+                return user
+        
+        return None
+    except Exception as e:
+        logger.error(f"Ошибка при получении статистики пользователя: {e}")
+        return None
+
+def get_global_stats():
+    """Получает общую статистику всех пользователей"""
+    try:
+        users = get_users_data()
+        if users is None:
+            logger.error("Не удалось получить данные пользователей для общей статистики")
+            return None
+
+        total_users = len(users)
+        ru_users = 0
+        en_users = 0
+
+        for user in users:
+            if isinstance(user, dict):
+                if user.get('language') == 'RU':
+                    ru_users += 1
+                elif user.get('language') == 'EN':
+                    en_users += 1
+
+        return {
+            "total_users": total_users,
+            "ru_users": ru_users,
+            "en_users": en_users
+        }
+    except Exception as e:
+        logger.error(f"Ошибка при получении общей статистики: {e}")
+        return None
 
 @bot.message_handler(commands=['start'])
 def start_command(message):
@@ -207,6 +284,64 @@ def start_command(message):
         logger.error(f"Ошибка при обработке команды /start: {e}")
         try:
             bot.send_message(chat_id, "Произошла ошибка. Попробуйте позже.")
+        except:
+            pass
+
+@bot.message_handler(commands=['stats'])
+def stats_command(message):
+    try:
+        user_id = message.from_user.id
+        chat_id = message.chat.id
+        logger.info(f"Команда /stats от пользователя {user_id}")
+
+        # Проверка авторизации
+        if not is_user_authorized(user_id):
+            bot.send_message(chat_id, "Вы не авторизованы. Используйте /start для регистрации.")
+            return
+
+        # Получаем статистику пользователя
+        user_stats = get_user_stats(user_id)
+        if not user_stats:
+            bot.send_message(chat_id, "Не удалось получить вашу статистику.")
+            return
+
+        # Получаем общую статистику
+        global_stats = get_global_stats()
+        if not global_stats:
+            bot.send_message(chat_id, "Не удалось получить общую статистику.")
+            return
+
+        # Формируем сообщение в зависимости от языка пользователя
+        if user_stats.get('language') == 'RU':
+            message_text = (
+                f"📊 *Ваша статистика:*\n"
+                f"🆔 ID: `{user_id}`\n"
+                f"🌐 Язык: {user_stats.get('language')}\n"
+                f"📅 Дата регистрации: {user_stats.get('registration_time')}\n"
+                f"⏱ Последний вход: {user_stats.get('last_access')}\n\n"
+                f"📈 *Общая статистика:*\n"
+                f"👥 Всего пользователей: {global_stats['total_users']}\n"
+                f"🇷🇺 Пользователей RU: {global_stats['ru_users']}\n"
+                f"🇬🇧 Пользователей EN: {global_stats['en_users']}"
+            )
+        else:  # EN
+            message_text = (
+                f"📊 *Your statistics:*\n"
+                f"🆔 ID: `{user_id}`\n"
+                f"🌐 Language: {user_stats.get('language')}\n"
+                f"📅 Registration date: {user_stats.get('registration_time')}\n"
+                f"⏱ Last access: {user_stats.get('last_access')}\n\n"
+                f"📈 *Global statistics:*\n"
+                f"👥 Total users: {global_stats['total_users']}\n"
+                f"🇷🇺 RU users: {global_stats['ru_users']}\n"
+                f"🇬🇧 EN users: {global_stats['en_users']}"
+            )
+
+        bot.send_message(chat_id, message_text, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Ошибка при обработке команды /stats: {e}")
+        try:
+            bot.send_message(chat_id, "Произошла ошибка при получении статистики. Попробуйте позже.")
         except:
             pass
 
