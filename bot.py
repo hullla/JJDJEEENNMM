@@ -6,12 +6,10 @@ import requests
 from datetime import datetime, timedelta
 import json
 import os
-# Импортируем функции из statistics.py
 from statistics import (
-    get_user_stats,
-    get_global_stats,
-    get_activity_stats,
-    generate_detailed_stats_file
+    get_user_stats, get_global_stats, get_activity_stats, 
+    get_language_trend_stats, get_daily_detailed_stats,
+    generate_detailed_stats_file, format_stats_message
 )
 
 # Настройка более подробного логирования
@@ -259,24 +257,24 @@ def start_command(message):
 
         if authorized:
             # Получаем язык пользователя
-            user_data = get_user_stats(user_id, get_users_data())
-            language = user_data.get('language', 'RU')
+            users = get_users_data()
+            user_language = 'RU'  # По умолчанию
+            for user in users:
+                if isinstance(user, dict) and user.get('user_id') == user_id:
+                    user_language = user.get('language', 'RU')
+                    break
             
-            # Создаем инлайн-кнопку для статистики
-            markup = types.InlineKeyboardMarkup(row_width=1)
-            if language == 'RU':
-                stats_button = types.InlineKeyboardButton("📊 Статистика", callback_data='statistics')
+            # Создаем инлайн кнопку статистики в зависимости от языка
+            markup = types.InlineKeyboardMarkup()
+            if user_language == 'RU':
+                stats_button = types.InlineKeyboardButton("📊 Статистика", callback_data='show_stats')
             else:  # EN
-                stats_button = types.InlineKeyboardButton("📊 Statistics", callback_data='statistics')
+                stats_button = types.InlineKeyboardButton("📊 Statistics", callback_data='show_stats')
             markup.add(stats_button)
             
-            # Сообщение в зависимости от языка
-            if language == 'RU':
-                welcome_text = "✅ Вы авторизованы! Используйте кнопку ниже для просмотра статистики."
-            else:  # EN
-                welcome_text = "✅ You are authorized! Use the button below to view statistics."
-            
-            bot.edit_message_text(welcome_text, chat_id, msg.message_id, reply_markup=markup)
+            # Отправляем приветственное сообщение с кнопкой
+            welcome_message = "✅ Вы авторизованы!" if user_language == 'RU' else "✅ You are authorized!"
+            bot.edit_message_text(welcome_message, chat_id, msg.message_id, reply_markup=markup)
         else:
             markup = types.InlineKeyboardMarkup(row_width=2)
             ru_button = types.InlineKeyboardButton("RU 🇷🇺", callback_data='lang_ru')
@@ -290,147 +288,116 @@ def start_command(message):
         except:
             pass
 
-@bot.callback_query_handler(func=lambda call: call.data == 'statistics')
-def statistics_callback(call):
+@bot.callback_query_handler(func=lambda call: call.data == 'show_stats')
+def show_statistics(call):
     try:
         user_id = call.from_user.id
         chat_id = call.message.chat.id
-        logger.info(f"Запрос статистики от пользователя {user_id}")
-
+        
         # Проверка авторизации
         if not is_user_authorized(user_id):
             bot.answer_callback_query(call.id, "Вы не авторизованы. Используйте /start для регистрации.")
             return
-
-        # Получаем данные пользователя и язык
+        
+        # Получаем данные пользователей
         users_data = get_users_data()
-        user_data = get_user_stats(user_id, users_data)
-        language = user_data.get('language', 'RU')
-
-        # Получаем общую статистику
+        
+        # Получаем статистику
+        user_stats = get_user_stats(users_data, user_id)
         global_stats = get_global_stats(users_data)
-        if not global_stats:
-            response_text = "Не удалось получить статистику." if language == 'RU' else "Failed to get statistics."
-            bot.send_message(chat_id, response_text)
-            return
-
-        # Получаем статистику активности
         activity_stats = get_activity_stats(users_data)
-        if not activity_stats:
-            response_text = "Не удалось получить статистику активности." if language == 'RU' else "Failed to get activity statistics."
-            bot.send_message(chat_id, response_text)
+        language_trend_stats = get_language_trend_stats(users_data)
+        
+        if not user_stats or not global_stats or not activity_stats:
+            bot.answer_callback_query(call.id, "Не удалось получить статистику. Попробуйте позже.")
             return
-
-        # Формируем сообщение с основной статистикой
-        if language == 'RU':
-            message_text = (
-                f"📊 *Ваша статистика:*\n"
-                f"🆔 ID: `{user_id}`\n"
-                f"🌐 Язык: {user_data.get('language')}\n"
-                f"📅 Дата регистрации: {user_data.get('registration_time')}\n"
-                f"⏱ Последний вход: {user_data.get('last_access')}\n\n"
-                f"📈 *Общая статистика:*\n"
-                f"👥 Всего пользователей: {global_stats['total_users']}\n"
-                f"🇷🇺 Пользователей RU: {global_stats['ru_users']}\n"
-                f"🇬🇧 Пользователей EN: {global_stats['en_users']}\n\n"
-                f"*Активность (последний заход):*\n"
-                f"🔹 Сегодня: {activity_stats['active']['today']}\n"
-                f"🔹 За неделю: {activity_stats['active']['week']}\n"
-                f"🔹 За месяц: {activity_stats['active']['month']}\n"
-                f"🔹 Более месяца: {activity_stats['active']['more']}\n\n"
-                f"*Регистрация новых пользователей:*\n"
-                f"🔸 Сегодня: {activity_stats['joined']['today']}\n"
-                f"🔸 За неделю: {activity_stats['joined']['week']}\n"
-                f"🔸 За месяц: {activity_stats['joined']['month']}\n"
-                f"🔸 Более месяца назад: {activity_stats['joined']['more']}\n\n"
-                f"*Статистика стран:*\n"
-                f"📱 За 24 часа: RU {activity_stats['countries']['24h']['RU']}, EN {activity_stats['countries']['24h']['EN']}\n"
-                f"📆 За неделю: RU {activity_stats['countries']['week']['RU']}, EN {activity_stats['countries']['week']['EN']}\n"
-                f"🗓 За месяц: RU {activity_stats['countries']['month']['RU']}, EN {activity_stats['countries']['month']['EN']}"
-            )
-        else:  # EN
-            message_text = (
-                f"📊 *Your statistics:*\n"
-                f"🆔 ID: `{user_id}`\n"
-                f"🌐 Language: {user_data.get('language')}\n"
-                f"📅 Registration date: {user_data.get('registration_time')}\n"
-                f"⏱ Last access: {user_data.get('last_access')}\n\n"
-                f"📈 *Global statistics:*\n"
-                f"👥 Total users: {global_stats['total_users']}\n"
-                f"🇷🇺 RU users: {global_stats['ru_users']}\n"
-                f"🇬🇧 EN users: {global_stats['en_users']}\n\n"
-                f"*Activity (last access):*\n"
-                f"🔹 Today: {activity_stats['active']['today']}\n"
-                f"🔹 This week: {activity_stats['active']['week']}\n"
-                f"🔹 This month: {activity_stats['active']['month']}\n"
-                f"🔹 More than a month: {activity_stats['active']['more']}\n\n"
-                f"*New user registrations:*\n"
-                f"🔸 Today: {activity_stats['joined']['today']}\n"
-                f"🔸 This week: {activity_stats['joined']['week']}\n"
-                f"🔸 This month: {activity_stats['joined']['month']}\n"
-                f"🔸 More than a month ago: {activity_stats['joined']['more']}\n\n"
-                f"*Country statistics:*\n"
-                f"📱 Last 24 hours: RU {activity_stats['countries']['24h']['RU']}, EN {activity_stats['countries']['24h']['EN']}\n"
-                f"📆 Last week: RU {activity_stats['countries']['week']['RU']}, EN {activity_stats['countries']['week']['EN']}\n"
-                f"🗓 Last month: RU {activity_stats['countries']['month']['RU']}, EN {activity_stats['countries']['month']['EN']}"
-            )
-
-        # Создаем кнопку для детальной статистики
+            
+        # Определяем язык пользователя
+        language = user_stats.get('language', 'RU')
+        
+        # Формируем сообщение
+        message_text = format_stats_message("user", user_stats, language)
+        message_text += "\n" + format_stats_message("global", global_stats, language)
+        message_text += "\n" + format_stats_message("activity", activity_stats, language)
+        message_text += "\n" + format_stats_message("language_trend", language_trend_stats, language)
+        
+        # Создаем инлайн кнопку для получения детальной статистики
         markup = types.InlineKeyboardMarkup()
         if language == 'RU':
-            detailed_button = types.InlineKeyboardButton("📋 Детальная статистика за месяц", callback_data='detailed_stats')
-        else:
-            detailed_button = types.InlineKeyboardButton("📋 Detailed monthly statistics", callback_data='detailed_stats')
-        markup.add(detailed_button)
-
-        bot.send_message(chat_id, message_text, parse_mode="Markdown", reply_markup=markup)
-        bot.answer_callback_query(call.id)
+            detail_button = types.InlineKeyboardButton("📋 Детальная статистика за месяц", callback_data='detailed_stats')
+        else:  # EN
+            detail_button = types.InlineKeyboardButton("📋 Detailed monthly statistics", callback_data='detailed_stats')
+        markup.add(detail_button)
+        
+        # Отправляем сообщение со статистикой
+        bot.edit_message_text(
+            message_text, 
+            chat_id, 
+            call.message.message_id,
+            parse_mode="Markdown",
+            reply_markup=markup
+        )
     except Exception as e:
-        logger.error(f"Ошибка при обработке запроса статистики: {e}")
+        logger.error(f"Ошибка при отображении статистики: {e}")
         try:
-            bot.answer_callback_query(call.id, "Произошла ошибка. Попробуйте позже.")
+            bot.answer_callback_query(call.id, "Произошла ошибка при получении статистики. Попробуйте позже.")
         except:
             pass
 
 @bot.callback_query_handler(func=lambda call: call.data == 'detailed_stats')
-def detailed_stats_callback(call):
+def show_detailed_statistics(call):
     try:
         user_id = call.from_user.id
         chat_id = call.message.chat.id
-        logger.info(f"Запрос детальной статистики от пользователя {user_id}")
-
+        
         # Проверка авторизации
         if not is_user_authorized(user_id):
             bot.answer_callback_query(call.id, "Вы не авторизованы. Используйте /start для регистрации.")
             return
-
-        # Получаем данные пользователя и язык
-        user_data = get_user_stats(user_id, get_users_data())
-        language = user_data.get('language', 'RU')
-
-        # Генерируем файл со статистикой
-        filename = generate_detailed_stats_file()
-        if not filename:
-            response_text = "Не удалось создать файл статистики." if language == 'RU' else "Failed to create statistics file."
-            bot.answer_callback_query(call.id, response_text)
-            return
-
-        # Отправляем файл
-        with open(filename, 'rb') as file:
-            caption = "Детальная статистика по дням за последний месяц" if language == 'RU' else "Detailed statistics by day for the last month"
-            bot.send_document(chat_id, file, caption=caption)
         
+        # Получаем данные пользователей
+        users_data = get_users_data()
+        
+        # Получаем язык пользователя
+        user_stats = get_user_stats(users_data, user_id)
+        language = user_stats.get('language', 'RU') if user_stats else 'RU'
+        
+        # Генерируем файл с детальной статистикой
+        stats_file = generate_detailed_stats_file(users_data)
+        
+        if not stats_file:
+            error_msg = "Не удалось сгенерировать детальную статистику." if language == 'RU' else "Failed to generate detailed statistics."
+            bot.answer_callback_query(call.id, error_msg)
+            return
+            
+        # Создаем временный файл
+        with open(stats_file["filename"], "w", encoding="utf-8") as f:
+            f.write(stats_file["content"])
+        
+        # Отправляем файл
+        with open(stats_file["filename"], "rb") as f:
+            caption = "Детальная статистика за месяц" if language == 'RU' else "Detailed monthly statistics"
+            bot.send_document(chat_id, f, caption=caption)
+            
         # Удаляем временный файл
         try:
-            os.remove(filename)
+            os.remove(stats_file["filename"])
         except:
             pass
             
-        bot.answer_callback_query(call.id)
+        # Отправляем кнопку для возврата к общей статистике
+        markup = types.InlineKeyboardMarkup()
+        back_button_text = "⬅️ Назад к статистике" if language == 'RU' else "⬅️ Back to statistics"
+        back_button = types.InlineKeyboardButton(back_button_text, callback_data='show_stats')
+        markup.add(back_button)
+        
+        info_text = "Файл с детальной статистикой сгенерирован и отправлен." if language == 'RU' else "Detailed statistics file has been generated and sent."
+        bot.send_message(chat_id, info_text, reply_markup=markup)
+        
     except Exception as e:
-        logger.error(f"Ошибка при обработке запроса детальной статистики: {e}")
+        logger.error(f"Ошибка при отображении детальной статистики: {e}")
         try:
-            bot.answer_callback_query(call.id, "Произошла ошибка. Попробуйте позже.")
+            bot.answer_callback_query(call.id, "Произошла ошибка при генерации детальной статистики. Попробуйте позже.")
         except:
             pass
 
@@ -444,25 +411,20 @@ def language_callback(call):
         # Финальная проверка перед регистрацией
         if is_user_authorized(user_id):
             response = "🔐 Вы уже в системе!" if language == 'RU' else "🔐 Already registered!"
-            
-            # Добавляем кнопку для просмотра статистики
-            markup = types.InlineKeyboardMarkup(row_width=1)
-            stats_button_text = "📊 Статистика" if language == 'RU' else "📊 Statistics"
-            stats_button = types.InlineKeyboardButton(stats_button_text, callback_data='statistics')
-            markup.add(stats_button)
-            
-            bot.edit_message_text(response, call.message.chat.id, call.message.message_id, reply_markup=markup)
+            bot.edit_message_text(response, call.message.chat.id, call.message.message_id)
             return
 
         # Регистрация пользователя в JSONBin
         try:
             if register_user(user_id, language):
-                response = "📬 Запрос отправлен!" if language == 'RU' else "📬 Request submitted!"
-                
-                # Добавляем кнопку для просмотра статистики
-                markup = types.InlineKeyboardMarkup(row_width=1)
-                stats_button_text = "📊 Статистика" if language == 'RU' else "📊 Statistics"
-                stats_button = types.InlineKeyboardButton(stats_button_text, callback_data='statistics')
+                # Создаем инлайн кнопку статистики в зависимости от языка
+                markup = types.InlineKeyboardMarkup()
+                if language == 'RU':
+                    stats_button = types.InlineKeyboardButton("📊 Статистика", callback_data='show_stats')
+                    response = "📬 Вы успешно зарегистрированы!"
+                else:  # EN
+                    stats_button = types.InlineKeyboardButton("📊 Statistics", callback_data='show_stats')
+                    response = "📬 Successfully registered!"
                 markup.add(stats_button)
                 
                 bot.edit_message_text(response, call.message.chat.id, call.message.message_id, reply_markup=markup)
@@ -477,6 +439,41 @@ def language_callback(call):
         logger.error(f"Ошибка при обработке выбора языка: {e}")
         try:
             bot.answer_callback_query(call.id, "Произошла ошибка. Попробуйте позже.")
+        except:
+            pass
+
+# Для обратной совместимости - старые команды просто перенаправляют на функциональность инлайн кнопки
+@bot.message_handler(commands=['stats', 'activity_stats'])
+def legacy_stats_commands(message):
+    try:
+        user_id = message.from_user.id
+        chat_id = message.chat.id
+        
+        # Проверка авторизации
+        if not is_user_authorized(user_id):
+            bot.send_message(chat_id, "Вы не авторизованы. Используйте /start для регистрации.")
+            return
+            
+        # Получаем язык пользователя
+        users_data = get_users_data()
+        user_stats = get_user_stats(users_data, user_id)
+        language = user_stats.get('language', 'RU') if user_stats else 'RU'
+        
+        # Создаем инлайн кнопку для статистики
+        markup = types.InlineKeyboardMarkup()
+        if language == 'RU':
+            stats_button = types.InlineKeyboardButton("📊 Открыть статистику", callback_data='show_stats')
+            message_text = "Используйте кнопку ниже для просмотра расширенной статистики:"
+        else:  # EN
+            stats_button = types.InlineKeyboardButton("📊 Open statistics", callback_data='show_stats')
+            message_text = "Use the button below to view extended statistics:"
+        markup.add(stats_button)
+        
+        bot.send_message(chat_id, message_text, reply_markup=markup)
+    except Exception as e:
+        logger.error(f"Ошибка при обработке устаревшей команды статистики: {e}")
+        try:
+            bot.send_message(chat_id, "Произошла ошибка. Попробуйте позже.")
         except:
             pass
 
