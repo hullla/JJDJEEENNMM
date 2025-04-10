@@ -2,14 +2,8 @@ import telebot
 from telebot import types
 import logging
 import time
-import requests
 from datetime import datetime
-from statistics import (
-    initialize_jsonbin, get_users_data, is_user_authorized, check_and_update_last_access, 
-    register_user, get_user_stats, get_global_stats, get_activity_stats,
-    create_statistics_menu, show_user_statistics, show_activity_statistics,
-    generate_detailed_statistics_file
-)
+import statistics  # Импортируем наш модуль статистики
 
 # Настройка более подробного логирования
 logging.basicConfig(
@@ -48,16 +42,22 @@ def start_command(message):
             bot.edit_message_text(emoji, chat_id, msg.message_id)
 
         # Проверка авторизации через кэш данных JSONBin
-        authorized = is_user_authorized(user_id)
+        authorized = statistics.is_user_authorized(user_id)
         logger.debug(f"Результат проверки авторизации: {authorized}")
 
         if authorized:
-            # Показываем меню статистики вместо "Вы авторизованы"
-            user_stats = get_user_stats(user_id)
-            language = user_stats.get('language', 'RU') if user_stats else 'RU'
-            markup = create_statistics_menu(language)
+            # Если пользователь авторизован, показываем сообщение и кнопку статистики
+            language = statistics.get_user_language(user_id)
+            markup = types.InlineKeyboardMarkup(row_width=1)
             
-            message_text = "✅ Вы авторизованы!" if language == 'RU' else "✅ You are authorized!"
+            if language == 'RU':
+                stats_btn = types.InlineKeyboardButton("📊 Статистика", callback_data='statistics_menu')
+                message_text = "✅ Вы авторизованы!"
+            else:  # EN
+                stats_btn = types.InlineKeyboardButton("📊 Statistics", callback_data='statistics_menu')
+                message_text = "✅ You are authorized!"
+            
+            markup.add(stats_btn)
             bot.edit_message_text(message_text, chat_id, msg.message_id, reply_markup=markup)
         else:
             markup = types.InlineKeyboardMarkup(row_width=2)
@@ -72,33 +72,6 @@ def start_command(message):
         except:
             pass
 
-@bot.message_handler(commands=['stats', 'activity_stats'])
-def stats_commands(message):
-    try:
-        user_id = message.from_user.id
-        chat_id = message.chat.id
-        logger.info(f"Команда статистики от пользователя {user_id}")
-
-        # Проверка авторизации
-        if not is_user_authorized(user_id):
-            bot.send_message(chat_id, "Вы не авторизованы. Используйте /start для регистрации.")
-            return
-
-        # Получаем данные пользователя
-        user_stats = get_user_stats(user_id)
-        language = user_stats.get('language', 'RU') if user_stats else 'RU'
-        
-        # Показываем меню статистики
-        markup = create_statistics_menu(language)
-        message_text = "📊 Статистика:" if language == 'RU' else "📊 Statistics:"
-        bot.send_message(chat_id, message_text, reply_markup=markup)
-    except Exception as e:
-        logger.error(f"Ошибка при обработке команды статистики: {e}")
-        try:
-            bot.send_message(chat_id, "Произошла ошибка. Попробуйте позже.")
-        except:
-            pass
-
 @bot.callback_query_handler(func=lambda call: call.data.startswith('lang_'))
 def language_callback(call):
     try:
@@ -107,29 +80,22 @@ def language_callback(call):
         logger.info(f"Выбор языка от пользователя {user_id}: {language}")
 
         # Финальная проверка перед регистрацией
-        if is_user_authorized(user_id):
+        if statistics.is_user_authorized(user_id):
             response = "🔐 Вы уже в системе!" if language == 'RU' else "🔐 Already registered!"
-            
-            # Показываем меню статистики
-            markup = create_statistics_menu(language)
-            bot.edit_message_text(response, call.message.chat.id, call.message.message_id, reply_markup=markup)
+            bot.edit_message_text(response, call.message.chat.id, call.message.message_id)
             return
 
         # Регистрация пользователя в JSONBin
         try:
-            if register_user(user_id, language):
+            if statistics.register_user(user_id, language):
                 response = "📬 Запрос отправлен!" if language == 'RU' else "📬 Request submitted!"
-                
-                # Показываем меню статистики
-                markup = create_statistics_menu(language)
-                bot.edit_message_text(response, call.message.chat.id, call.message.message_id, reply_markup=markup)
             else:
                 response = "⚠️ Ошибка регистрации" if language == 'RU' else "⚠️ Registration error"
-                bot.edit_message_text(response, call.message.chat.id, call.message.message_id)
         except Exception as e:
             logger.error(f"Ошибка регистрации: {e}")
             response = "⚠️ Ошибка связи" if language == 'RU' else "⚠️ Connection error"
-            bot.edit_message_text(response, call.message.chat.id, call.message.message_id)
+
+        bot.edit_message_text(response, call.message.chat.id, call.message.message_id)
     except Exception as e:
         logger.error(f"Ошибка при обработке выбора языка: {e}")
         try:
@@ -137,80 +103,26 @@ def language_callback(call):
         except:
             pass
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('stats_'))
-def statistics_callback(call):
-    try:
-        user_id = call.from_user.id
-        chat_id = call.message.chat.id
-        message_id = call.message.message_id
-        action = call.data.split('_')[1]
-        
-        # Проверка авторизации
-        if not is_user_authorized(user_id):
-            bot.answer_callback_query(call.id, "Вы не авторизованы. Используйте /start для регистрации.")
-            return
-        
-        user_stats = get_user_stats(user_id)
-        language = user_stats.get('language', 'RU') if user_stats else 'RU'
-        
-        if action == 'user':
-            # Показываем статистику пользователя
-            message_text, markup = show_user_statistics(user_id, language)
-            bot.edit_message_text(message_text, chat_id, message_id, reply_markup=markup, parse_mode="Markdown")
-        
-        elif action == 'activity':
-            # Показываем статистику активности
-            message_text, markup = show_activity_statistics(user_id, language)
-            bot.edit_message_text(message_text, chat_id, message_id, reply_markup=markup, parse_mode="Markdown")
-        
-        elif action == 'detailed':
-            # Генерируем и отправляем файл со статистикой
-            waiting_message = "Генерация детальной статистики..." if language == 'RU' else "Generating detailed statistics..."
-            bot.edit_message_text(waiting_message, chat_id, message_id)
-            
-            filename, file_content = generate_detailed_statistics_file(language)
-            
-            # Отправляем файл
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write(file_content)
-            
-            with open(filename, 'rb') as f:
-                bot.send_document(chat_id, f, caption="📊 Детальная статистика" if language == 'RU' else "📊 Detailed statistics")
-            
-            # Восстанавливаем меню
-            markup = create_statistics_menu(language)
-            message_text = "📊 Статистика:" if language == 'RU' else "📊 Statistics:"
-            bot.edit_message_text(message_text, chat_id, message_id, reply_markup=markup)
-        
-        elif action == 'back':
-            # Возвращаемся к меню статистики
-            markup = create_statistics_menu(language)
-            message_text = "📊 Статистика:" if language == 'RU' else "📊 Statistics:"
-            bot.edit_message_text(message_text, chat_id, message_id, reply_markup=markup)
-        
-    except Exception as e:
-        logger.error(f"Ошибка при обработке статистики: {e}")
-        try:
-            bot.answer_callback_query(call.id, "Произошла ошибка при обработке статистики. Попробуйте позже.")
-        except:
-            pass
-
 def main():
     try:
         # Проверяем доступность JSONBin и инициализируем структуру при необходимости
         logger.info("Инициализация JSONBin структуры...")
-        success = initialize_jsonbin()
+        success = statistics.initialize_jsonbin()
         if not success:
             logger.error("Не удалось инициализировать JSONBin структуру!")
 
         # При запуске бота, сразу загружаем данные пользователей в кэш
         logger.info("Загрузка данных пользователей в кэш...")
-        users = get_users_data(force_update=True)
+        users = statistics.get_users_data(force_update=True)
         logger.info(f"Загружено {len(users) if users else 0} записей")
+
+        # Регистрируем обработчики для статистики
+        statistics.register_statistics_handlers(bot)
 
         logger.info("Бот запущен. Кэш пользователей инициализирован.")
 
         # Добавляем тестовый запрос к API Telegram для проверки токена
+        import requests
         test_response = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe")
         if test_response.status_code == 200:
             bot_info = test_response.json()
