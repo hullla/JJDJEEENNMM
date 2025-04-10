@@ -753,41 +753,44 @@ def register_statistics_handlers(bot):
             except:
                 pass
     
-    @bot.callback_query_handler(func=lambda call: call.data == 'back_to_start')
-    def back_to_start_callback(call):
+
+@bot.callback_query_handler(func=lambda call: call.data == 'back_to_start')
+def back_to_start_callback(call):
+    try:
+        user_id = call.from_user.id
+        chat_id = call.message.chat.id
+
+        # Проверка авторизации
+        if not is_user_authorized(user_id):
+            bot.answer_callback_query(call.id, "Вы не авторизованы. Используйте /start для регистрации.")
+            return
+
+        # Получаем язык пользователя
+        language = get_user_language(user_id)
+
+        # Создаем клавиатуру с кнопками
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        if language == 'RU':
+            creators_btn = types.InlineKeyboardButton("👤 Для создателей", callback_data='creators_menu')
+            stats_btn = types.InlineKeyboardButton("📊 Статистика", callback_data='statistics_menu')
+            message_text = "✅ Вы авторизованы!"
+        else:  # EN
+            creators_btn = types.InlineKeyboardButton("👤 For Creators", callback_data='creators_menu')
+            stats_btn = types.InlineKeyboardButton("📊 Statistics", callback_data='statistics_menu')
+            message_text = "✅ You are authorized!"
+
+        markup.add(creators_btn, stats_btn)
+
+        bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            text=message_text,
+            reply_markup=markup
+        )
+
+    except Exception as e:
+        logger.error(f"Ошибка при возврате на начальный экран: {e}")
         try:
-            user_id = call.from_user.id
-            chat_id = call.message.chat.id
-            
-            # Проверка авторизации
-            if not is_user_authorized(user_id):
-                bot.answer_callback_query(call.id, "Вы не авторизованы. Используйте /start для регистрации.")
-                return
-            
-            # Получаем язык пользователя
-            language = get_user_language(user_id)
-            
-            # Создаем клавиатуру для статистики
-            markup = types.InlineKeyboardMarkup(row_width=1)
-            if language == 'RU':
-                stats_btn = types.InlineKeyboardButton("📊 Статистика", callback_data='statistics_menu')
-                message_text = "✅ Вы авторизованы!"
-            else:  # EN
-                stats_btn = types.InlineKeyboardButton("📊 Statistics", callback_data='statistics_menu')
-                message_text = "✅ You are authorized!"
-            
-            markup.add(stats_btn)
-            
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=call.message.message_id,
-                text=message_text,
-                reply_markup=markup
-            )
-            
-        except Exception as e:
-            logger.error(f"Ошибка при возврате на начальный экран: {e}")
-            try:
-                bot.answer_callback_query(call.id, "Произошла ошибка. Попробуйте позже.")
-            except:
-                pass
+            bot.answer_callback_query(call.id, "Произошла ошибка. Попробуйте позже.")
+        except:
+            pass
