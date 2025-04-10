@@ -1,465 +1,261 @@
-import logging
+# statistics.py
 import json
+import logging
+import requests
 from datetime import datetime, timedelta
+from io import BytesIO
 
-# Настройка логирования
 logger = logging.getLogger(__name__)
 
-def get_user_stats(users_data, user_id):
-    """Получает статистику для конкретного пользователя"""
+# Конфигурация JSONBin.io
+JSONBIN_API_KEY = "$2a$10$hT79uCEaJENfQBZ7576aL.upUOtnPqJZX53sWcln0HZib/bgs.8.u"
+JSONBIN_BIN_ID = "67f532028a456b796684e974"
+JSONBIN_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}"
+
+# Локализация
+LANGUAGES = {
+    'RU': {
+        'stats_title': "📊 Полная статистика",
+        'user_stats': (
+            "👤 Ваша статистика:\n"
+            "🆔 ID: {user_id}\n"
+            "🌐 Язык: {language}\n"
+            "📅 Зарегистрирован: {registration_date}\n"
+            "⏳ Дней в боте: {days_in_bot}\n"
+            "⏱ Последняя активность: {last_access}"
+        ),
+        'global_stats': (
+            "🌍 Глобальная статистика:\n"
+            "👥 Всего пользователей: {total_users}\n"
+            "🇷🇺 Русскоязычных: {ru_users}\n"
+            "🇬🇧 Англоязычных: {en_users}"
+        ),
+        'activity_stats': (
+            "📈 Статистика активности:\n\n"
+            "🔥 Активные пользователи:\n"
+            "• Сегодня: {active_today}\n"
+            "• Неделя: {active_week}\n"
+            "• Месяц: {active_month}\n\n"
+            "🆕 Новые регистрации:\n"
+            "• Сегодня: {joined_today}\n"
+            "• Неделя: {joined_week}\n"
+            "• Месяц: {joined_month}\n\n"
+            "🌎 По странам (последние 30 дней):\n"
+            "🇷🇺 Россия: {ru_recent}\n"
+            "🇬🇧 Англия: {en_recent}"
+        ),
+        'back_btn': "🔙 Назад",
+        'monthly_report_caption': "📅 Подробная статистика за последний месяц"
+    },
+    'EN': {
+        'stats_title': "📊 Complete Statistics",
+        'user_stats': (
+            "👤 Your Statistics:\n"
+            "🆔 ID: {user_id}\n"
+            "🌐 Language: {language}\n"
+            "📅 Registered: {registration_date}\n"
+            "⏳ Days in bot: {days_in_bot}\n"
+            "⏱ Last activity: {last_access}"
+        ),
+        'global_stats': (
+            "🌍 Global Statistics:\n"
+            "👥 Total users: {total_users}\n"
+            "🇷🇺 Russian: {ru_users}\n"
+            "🇬🇧 English: {en_users}"
+        ),
+        'activity_stats': (
+            "📈 Activity Statistics:\n\n"
+            "🔥 Active users:\n"
+            "• Today: {active_today}\n"
+            "• Week: {active_week}\n"
+            "• Month: {active_month}\n\n"
+            "🆕 New registrations:\n"
+            "• Today: {joined_today}\n"
+            "• Week: {joined_week}\n"
+            "• Month: {joined_month}\n\n"
+            "🌎 By country (last 30 days):\n"
+            "🇷🇺 Russia: {ru_recent}\n"
+            "🇬🇧 England: {en_recent}"
+        ),
+        'back_btn': "🔙 Back",
+        'monthly_report_caption': "📅 Detailed statistics for last month"
+    }
+}
+
+def initialize_jsonbin():
+    """Инициализирует структуру данных в JSONBin"""
     try:
-        if users_data is None:
-            logger.error("Не удалось получить данные пользователей для статистики")
-            return None
-
-        for user in users_data:
-            if isinstance(user, dict) and user.get('user_id') == user_id:
-                return user
-
-        return None
+        response = requests.get(JSONBIN_URL, headers=get_headers())
+        if response.status_code == 200:
+            return True
+        
+        initial_data = {"users": []}
+        response = requests.put(JSONBIN_URL, json=initial_data, headers=get_headers(True))
+        return response.status_code == 200
     except Exception as e:
-        logger.error(f"Ошибка при получении статистики пользователя: {e}")
-        return None
+        logger.error(f"JSONBin initialization error: {e}")
+        return False
 
-def get_global_stats(users_data):
-    """Получает общую статистику всех пользователей"""
+def get_headers(include_content_type=False):
+    headers = {"X-Master-Key": JSONBIN_API_KEY}
+    if include_content_type:
+        headers["Content-Type"] = "application/json"
+    return headers
+
+def get_users_data(force_update=False):
+    """Получает данные пользователей с кэшированием"""
     try:
-        if users_data is None:
-            logger.error("Не удалось получить данные пользователей для общей статистики")
-            return None
-
-        total_users = len(users_data)
-        ru_users = 0
-        en_users = 0
-
-        for user in users_data:
-            if isinstance(user, dict):
-                if user.get('language') == 'RU':
-                    ru_users += 1
-                elif user.get('language') == 'EN':
-                    en_users += 1
-
-        return {
-            "total_users": total_users,
-            "ru_users": ru_users,
-            "en_users": en_users
-        }
+        response = requests.get(JSONBIN_URL, headers=get_headers())
+        if response.status_code == 200:
+            data = response.json().get('record', {}).get('users', [])
+            return process_users_data(data)
+        return []
     except Exception as e:
-        logger.error(f"Ошибка при получении общей статистики: {e}")
-        return None
+        logger.error(f"Error fetching users data: {e}")
+        return []
 
-def get_language_trend_stats(users_data):
-    """Получает статистику по языкам с динамикой по времени"""
+def process_users_data(users):
+    """Обработка и валидация данных пользователей"""
+    valid_users = []
+    for user in users:
+        if isinstance(user, dict) and 'user_id' in user:
+            user['days_in_bot'] = calculate_days(user.get('registration_time'))
+            valid_users.append(user)
+    return valid_users
+
+def calculate_days(registration_time):
+    """Вычисляет количество дней с регистрации"""
     try:
-        if users_data is None:
-            logger.error("Не удалось получить данные пользователей для статистики языков")
-            return None
+        reg_date = datetime.strptime(registration_time, "%Y-%m-%d %H:%M:%S")
+        return (datetime.now() - reg_date).days
+    except:
+        return 0
 
-        current_time = datetime.now()
-        
-        # Статистика по периодам
-        last_24h = {
-            "RU": 0,
-            "EN": 0
-        }
-        last_week = {
-            "RU": 0,
-            "EN": 0
-        }
-        last_month = {
-            "RU": 0,
-            "EN": 0
-        }
-        
-        for user in users_data:
-            if isinstance(user, dict) and 'registration_time' in user:
-                try:
-                    registration_time = datetime.strptime(user['registration_time'], "%Y-%m-%d %H:%M:%S")
-                    days_diff = (current_time - registration_time).days
-                    hours_diff = (current_time - registration_time).total_seconds() / 3600
-                    
-                    language = user.get('language', 'Unknown')
-                    if language not in ['RU', 'EN']:
-                        continue
-                        
-                    # Группировка по периодам
-                    if hours_diff < 24:  # Последние 24 часа
-                        last_24h[language] += 1
-                        
-                    if days_diff < 7:  # Последняя неделя
-                        last_week[language] += 1
-                        
-                    if days_diff < 30:  # Последний месяц
-                        last_month[language] += 1
-                        
-                except (ValueError, TypeError):
-                    continue
-        
-        return {
-            "last_24h": last_24h,
-            "last_week": last_week,
-            "last_month": last_month
-        }
-    except Exception as e:
-        logger.error(f"Ошибка при получении статистики языков: {e}")
-        return None
-
-def get_activity_stats(users_data):
-    """Получает статистику пользователей по времени активности и регистрации"""
+def update_users_data(users):
+    """Обновляет данные в JSONBin"""
     try:
-        if users_data is None:
-            logger.error("Не удалось получить данные пользователей для статистики активности")
-            return None
-
-        current_time = datetime.now()
-
-        # Для статистики по времени последнего захода
-        active_today = 0
-        active_week = 0
-        active_month = 0
-        active_more = 0
-
-        # Для статистики по времени регистрации
-        joined_today = 0
-        joined_week = 0
-        joined_month = 0
-        joined_more = 0
-
-        # Словари для хранения количества пользователей по месяцам их активности/регистрации
-        months_activity = {}
-        months_registration = {}
-        
-        # Словари для хранения данных по языкам
-        language_stats = {
-            "active": {
-                "today": {"RU": 0, "EN": 0},
-                "week": {"RU": 0, "EN": 0},
-                "month": {"RU": 0, "EN": 0},
-                "more": {"RU": 0, "EN": 0}
-            },
-            "joined": {
-                "today": {"RU": 0, "EN": 0},
-                "week": {"RU": 0, "EN": 0},
-                "month": {"RU": 0, "EN": 0},
-                "more": {"RU": 0, "EN": 0}
-            }
-        }
-
-        for user in users_data:
-            if isinstance(user, dict):
-                language = user.get('language', 'Unknown')
-                
-                # Анализ времени последнего захода
-                if 'last_access' in user:
-                    try:
-                        last_access = datetime.strptime(user['last_access'], "%Y-%m-%d %H:%M:%S")
-                        days_diff = (current_time - last_access).days
-
-                        # Группировка по месяцам
-                        month_key = last_access.strftime("%Y-%m")
-                        if month_key not in months_activity:
-                            months_activity[month_key] = 0
-                        months_activity[month_key] += 1
-
-                        # Группировка по периодам
-                        if days_diff < 1:  # Сегодня
-                            active_today += 1
-                            if language in ['RU', 'EN']:
-                                language_stats["active"]["today"][language] += 1
-                        elif days_diff < 7:  # Неделя
-                            active_week += 1
-                            if language in ['RU', 'EN']:
-                                language_stats["active"]["week"][language] += 1
-                        elif days_diff < 30:  # Месяц
-                            active_month += 1
-                            if language in ['RU', 'EN']:
-                                language_stats["active"]["month"][language] += 1
-                        else:  # Более месяца
-                            active_more += 1
-                            if language in ['RU', 'EN']:
-                                language_stats["active"]["more"][language] += 1
-                    except (ValueError, TypeError):
-                        active_more += 1  # В случае ошибки, считаем как неактивного
-                        if language in ['RU', 'EN']:
-                            language_stats["active"]["more"][language] += 1
-
-                # Анализ времени регистрации
-                if 'registration_time' in user:
-                    try:
-                        registration_time = datetime.strptime(user['registration_time'], "%Y-%m-%d %H:%M:%S")
-                        days_diff = (current_time - registration_time).days
-
-                        # Группировка по месяцам
-                        month_key = registration_time.strftime("%Y-%m")
-                        if month_key not in months_registration:
-                            months_registration[month_key] = 0
-                        months_registration[month_key] += 1
-
-                        # Группировка по периодам
-                        if days_diff < 1:  # Сегодня
-                            joined_today += 1
-                            if language in ['RU', 'EN']:
-                                language_stats["joined"]["today"][language] += 1
-                        elif days_diff < 7:  # Неделя
-                            joined_week += 1
-                            if language in ['RU', 'EN']:
-                                language_stats["joined"]["week"][language] += 1
-                        elif days_diff < 30:  # Месяц
-                            joined_month += 1
-                            if language in ['RU', 'EN']:
-                                language_stats["joined"]["month"][language] += 1
-                        else:  # Более месяца
-                            joined_more += 1
-                            if language in ['RU', 'EN']:
-                                language_stats["joined"]["more"][language] += 1
-                    except (ValueError, TypeError):
-                        joined_more += 1  # В случае ошибки, считаем как старого пользователя
-                        if language in ['RU', 'EN']:
-                            language_stats["joined"]["more"][language] += 1
-
-        # Сортируем словари по ключам (месяцам) для удобства
-        months_activity = dict(sorted(months_activity.items()))
-        months_registration = dict(sorted(months_registration.items()))
-
-        return {
-            "active": {
-                "today": active_today,
-                "week": active_week,
-                "month": active_month,
-                "more": active_more,
-                "by_months": months_activity
-            },
-            "joined": {
-                "today": joined_today,
-                "week": joined_week,
-                "month": joined_month,
-                "more": joined_more,
-                "by_months": months_registration
-            },
-            "language_stats": language_stats,
-            "total_users": len(users_data)
-        }
+        response = requests.put(
+            JSONBIN_URL,
+            json={"users": users},
+            headers=get_headers(True)
+        )
+        return response.status_code == 200
     except Exception as e:
-        logger.error(f"Ошибка при получении статистики активности: {e}")
-        return None
+        logger.error(f"Error updating users data: {e}")
+        return False
 
-def get_daily_detailed_stats(users_data):
-    """Получает детальную статистику по дням за последний месяц"""
-    try:
-        if users_data is None:
-            logger.error("Не удалось получить данные пользователей для детальной статистики")
-            return None
-            
-        current_time = datetime.now()
-        thirty_days_ago = current_time - timedelta(days=30)
-        
-        # Создаем словарь для хранения статистики по дням
-        daily_stats = {}
-        
-        # Инициализируем словарь на 30 дней назад
-        for i in range(30):
-            day = (current_time - timedelta(days=i)).strftime("%Y-%m-%d")
-            daily_stats[day] = {
-                "active": {"total": 0, "RU": 0, "EN": 0},
-                "joined": {"total": 0, "RU": 0, "EN": 0}
-            }
-        
-        # Заполняем словарь данными
-        for user in users_data:
-            if isinstance(user, dict):
-                language = user.get('language', 'Unknown')
-                
-                # Анализ времени последнего захода
-                if 'last_access' in user:
-                    try:
-                        last_access = datetime.strptime(user['last_access'], "%Y-%m-%d %H:%M:%S")
-                        if last_access >= thirty_days_ago:
-                            day_key = last_access.strftime("%Y-%m-%d")
-                            if day_key in daily_stats:
-                                daily_stats[day_key]["active"]["total"] += 1
-                                if language in ['RU', 'EN']:
-                                    daily_stats[day_key]["active"][language] += 1
-                    except (ValueError, TypeError):
-                        pass
-                
-                # Анализ времени регистрации
-                if 'registration_time' in user:
-                    try:
-                        registration_time = datetime.strptime(user['registration_time'], "%Y-%m-%d %H:%M:%S")
-                        if registration_time >= thirty_days_ago:
-                            day_key = registration_time.strftime("%Y-%m-%d")
-                            if day_key in daily_stats:
-                                daily_stats[day_key]["joined"]["total"] += 1
-                                if language in ['RU', 'EN']:
-                                    daily_stats[day_key]["joined"][language] += 1
-                    except (ValueError, TypeError):
-                        pass
-        
-        # Сортируем словарь по дате (от новых к старым)
-        daily_stats = dict(sorted(daily_stats.items(), reverse=True))
-        
-        return daily_stats
-    except Exception as e:
-        logger.error(f"Ошибка при получении детальной статистики по дням: {e}")
-        return None
+def get_user_stats(user_id):
+    """Возвращает статистику конкретного пользователя"""
+    users = get_users_data()
+    for user in users:
+        if user.get('user_id') == user_id:
+            user['days_in_bot'] = calculate_days(user.get('registration_time'))
+            return user
+    return None
 
-def generate_detailed_stats_file(users_data):
-    """Генерирует текстовый файл с детальной статистикой"""
-    try:
-        daily_stats = get_daily_detailed_stats(users_data)
-        if not daily_stats:
-            return None
-            
-        current_date = datetime.now().strftime("%Y-%m-%d")
-        filename = f"{current_date}.txt"
-        
-        # Формируем содержимое файла
-        content = f"Детальная статистика за период: {current_date} - {min(daily_stats.keys())}\n\n"
-        content += "Формат данных: YYYY-MM-DD: Всего активных (RU/EN) | Всего новых (RU/EN)\n\n"
-        
-        for day, stats in daily_stats.items():
-            active_total = stats["active"]["total"]
-            active_ru = stats["active"]["RU"]
-            active_en = stats["active"]["EN"]
-            
-            joined_total = stats["joined"]["total"]
-            joined_ru = stats["joined"]["RU"]
-            joined_en = stats["joined"]["EN"]
-            
-            content += f"{day}: Активных: {active_total} (RU: {active_ru}, EN: {active_en}) | "
-            content += f"Новых: {joined_total} (RU: {joined_ru}, EN: {joined_en})\n"
-        
-        return {
-            "filename": filename,
-            "content": content
-        }
-    except Exception as e:
-        logger.error(f"Ошибка при генерации файла статистики: {e}")
-        return None
+def get_global_stats():
+    """Глобальная статистика"""
+    users = get_users_data()
+    ru_users = sum(1 for u in users if u.get('language') == 'RU')
+    en_users = sum(1 for u in users if u.get('language') == 'EN')
+    return {
+        'total_users': len(users),
+        'ru_users': ru_users,
+        'en_users': en_users
+    }
 
-def format_stats_message(stats_type, stats_data, language='RU'):
-    """Форматирует сообщение статистики в зависимости от типа и языка"""
-    if stats_type == "user":
-        # Форматирование статистики пользователя
-        user_stats = stats_data
-        if language == 'RU':
-            return (
-                f"📊 *Ваша статистика:*\n"
-                f"🆔 ID: `{user_stats.get('user_id')}`\n"
-                f"🌐 Язык: {user_stats.get('language')}\n"
-                f"📅 Дата регистрации: {user_stats.get('registration_time')}\n"
-                f"⏱ Последний вход: {user_stats.get('last_access')}\n"
-            )
-        else:  # EN
-            return (
-                f"📊 *Your statistics:*\n"
-                f"🆔 ID: `{user_stats.get('user_id')}`\n"
-                f"🌐 Language: {user_stats.get('language')}\n"
-                f"📅 Registration date: {user_stats.get('registration_time')}\n"
-                f"⏱ Last access: {user_stats.get('last_access')}\n"
-            )
+def get_activity_stats():
+    """Статистика активности"""
+    users = get_users_data()
+    now = datetime.now()
     
-    elif stats_type == "global":
-        # Форматирование общей статистики
-        global_stats = stats_data
-        if language == 'RU':
-            return (
-                f"📈 *Общая статистика:*\n"
-                f"👥 Всего пользователей: {global_stats['total_users']}\n"
-                f"🇷🇺 Пользователей RU: {global_stats['ru_users']}\n"
-                f"🇬🇧 Пользователей EN: {global_stats['en_users']}\n"
-            )
-        else:  # EN
-            return (
-                f"📈 *Global statistics:*\n"
-                f"👥 Total users: {global_stats['total_users']}\n"
-                f"🇷🇺 RU users: {global_stats['ru_users']}\n"
-                f"🇬🇧 EN users: {global_stats['en_users']}\n"
-            )
-    
-    elif stats_type == "activity":
-        # Форматирование статистики активности
-        activity_stats = stats_data
-        language_stats = activity_stats.get("language_stats", {})
-        
-        if language == 'RU':
-            result = (
-                f"📊 *Статистика активности пользователей:*\n\n"
-                f"👥 *Всего пользователей:* {activity_stats['total_users']}\n\n"
-                f"*Активность (последний заход):*\n"
-                f"🔹 Сегодня: {activity_stats['active']['today']}\n"
-                f"🔹 За неделю: {activity_stats['active']['week']}\n"
-                f"🔹 За месяц: {activity_stats['active']['month']}\n"
-                f"🔹 Более месяца: {activity_stats['active']['more']}\n\n"
-                f"*Регистрация новых пользователей:*\n"
-                f"🔸 Сегодня: {activity_stats['joined']['today']}\n"
-                f"🔸 За неделю: {activity_stats['joined']['week']}\n"
-                f"🔸 За месяц: {activity_stats['joined']['month']}\n"
-                f"🔸 Более месяца назад: {activity_stats['joined']['more']}\n\n"
-            )
-            
-            # Добавляем статистику по языкам
-            result += "*Статистика по языкам:*\n"
-            result += "RU / EN\n"
-            
-            # Активность по языкам
-            result += f"Активность сегодня: {language_stats['active']['today']['RU']} / {language_stats['active']['today']['EN']}\n"
-            result += f"Активность за неделю: {language_stats['active']['week']['RU']} / {language_stats['active']['week']['EN']}\n" 
-            result += f"Активность за месяц: {language_stats['active']['month']['RU']} / {language_stats['active']['month']['EN']}\n\n"
-            
-            # Регистрация по языкам
-            result += f"Регистрации сегодня: {language_stats['joined']['today']['RU']} / {language_stats['joined']['today']['EN']}\n"
-            result += f"Регистрации за неделю: {language_stats['joined']['week']['RU']} / {language_stats['joined']['week']['EN']}\n"
-            result += f"Регистрации за месяц: {language_stats['joined']['month']['RU']} / {language_stats['joined']['month']['EN']}\n\n"
-        else:  # EN
-            result = (
-                f"📊 *User Activity Statistics:*\n\n"
-                f"👥 *Total users:* {activity_stats['total_users']}\n\n"
-                f"*Activity (last access):*\n"
-                f"🔹 Today: {activity_stats['active']['today']}\n"
-                f"🔹 This week: {activity_stats['active']['week']}\n"
-                f"🔹 This month: {activity_stats['active']['month']}\n"
-                f"🔹 More than a month: {activity_stats['active']['more']}\n\n"
-                f"*New user registrations:*\n"
-                f"🔸 Today: {activity_stats['joined']['today']}\n"
-                f"🔸 This week: {activity_stats['joined']['week']}\n"
-                f"🔸 This month: {activity_stats['joined']['month']}\n"
-                f"🔸 More than a month ago: {activity_stats['joined']['more']}\n\n"
-            )
-            
-            # Добавляем статистику по языкам
-            result += "*Language statistics:*\n"
-            result += "RU / EN\n"
-            
-            # Активность по языкам
-            result += f"Activity today: {language_stats['active']['today']['RU']} / {language_stats['active']['today']['EN']}\n"
-            result += f"Activity this week: {language_stats['active']['week']['RU']} / {language_stats['active']['week']['EN']}\n"
-            result += f"Activity this month: {language_stats['active']['month']['RU']} / {language_stats['active']['month']['EN']}\n\n"
-            
-            # Регистрация по языкам  
-            result += f"Registrations today: {language_stats['joined']['today']['RU']} / {language_stats['joined']['today']['EN']}\n"
-            result += f"Registrations this week: {language_stats['joined']['week']['RU']} / {language_stats['joined']['week']['EN']}\n"
-            result += f"Registrations this month: {language_stats['joined']['month']['RU']} / {language_stats['joined']['month']['EN']}\n\n"
-        
-        return result
-    
-    elif stats_type == "language_trend":
-        # Форматирование статистики по языкам с динамикой
-        lang_stats = stats_data
-        
-        if language == 'RU':
-            return (
-                f"*Распределение по языкам:*\n"
-                f"За последние 24 часа: RU: {lang_stats['last_24h']['RU']}, EN: {lang_stats['last_24h']['EN']}\n"
-                f"За последнюю неделю: RU: {lang_stats['last_week']['RU']}, EN: {lang_stats['last_week']['EN']}\n"
-                f"За последний месяц: RU: {lang_stats['last_month']['RU']}, EN: {lang_stats['last_month']['EN']}\n"
-            )
-        else:  # EN
-            return (
-                f"*Language distribution:*\n"
-                f"Last 24 hours: RU: {lang_stats['last_24h']['RU']}, EN: {lang_stats['last_24h']['EN']}\n"
-                f"Last week: RU: {lang_stats['last_week']['RU']}, EN: {lang_stats['last_week']['EN']}\n"
-                f"Last month: RU: {lang_stats['last_month']['RU']}, EN: {lang_stats['last_month']['EN']}\n"
-            )
-    
-    return ""
+    # Активность
+    active = {'today': 0, 'week': 0, 'month': 0}
+    # Регистрации
+    joined = {'today': 0, 'week': 0, 'month': 0}
+    # По странам (последние 30 дней)
+    country_stats = {'RU': 0, 'EN': 0}
+
+    for user in users:
+        last_access = parse_date(user.get('last_access'))
+        reg_date = parse_date(user.get('registration_time'))
+
+        # Активность
+        if last_access:
+            update_period_stats(active, now - last_access)
+
+        # Регистрации
+        if reg_date:
+            update_period_stats(joined, now - reg_date)
+            if (now - reg_date).days <= 30:
+                lang = user.get('language', 'RU')
+                country_stats[lang] += 1
+
+    return {
+        'active': active,
+        'joined': joined,
+        'country_stats': country_stats
+    }
+
+def parse_date(date_str):
+    """Парсит дату из строки"""
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
+    except:
+        return None
+
+def update_period_stats(stats, time_delta):
+    """Обновляет счетчики периодов"""
+    days = time_delta.days
+    if days < 1:
+        stats['today'] += 1
+    if days < 7:
+        stats['week'] += 1
+    if days < 30:
+        stats['month'] += 1
+
+def generate_monthly_stats_file(lang='RU'):
+    """Генерирует файл с месячной статистикой"""
+    users = get_users_data()
+    now = datetime.now()
+    stats = {}
+
+    # Инициализация 30 дней
+    for i in range(30):
+        date = (now - timedelta(days=i)).strftime("%Y-%m-%d")
+        stats[date] = {'active': 0, 'registrations': 0, 'RU': 0, 'EN': 0}
+
+    for user in users:
+        reg_date = parse_date(user.get('registration_time'))
+        last_access = parse_date(user.get('last_access'))
+        user_lang = user.get('language', 'RU')
+
+        # Регистрации
+        if reg_date:
+            reg_key = reg_date.strftime("%Y-%m-%d")
+            if reg_key in stats:
+                stats[reg_key]['registrations'] += 1
+                stats[reg_key][user_lang] += 1
+
+        # Активность
+        if last_access:
+            access_key = last_access.strftime("%Y-%m-%d")
+            if access_key in stats:
+                stats[access_key]['active'] += 1
+
+    # Форматирование в текст
+    report = []
+    for date in sorted(stats.keys(), reverse=True):
+        data = stats[date]
+        report.append(
+            f"[{date}]\n"
+            f"Active: {data['active']}\n"
+            f"New: {data['registrations']} "
+            f"(RU: {data['RU']}, EN: {data['EN']})\n"
+            f"{'-'*30}"
+        )
+
+    # Создание файла в памяти
+    file_data = BytesIO("\n".join(report).encode('utf-8'))
+    file_data.name = f"stats_{datetime.now().strftime('%Y-%m')}.txt"
+    return file_data
