@@ -4,6 +4,7 @@ import logging
 import time
 from datetime import datetime
 import statistics  # Импортируем наш модуль статистики
+import creators  # Импортируем модуль для функционала авторов
 
 # Настройка более подробного логирования
 logging.basicConfig(
@@ -46,18 +47,20 @@ def start_command(message):
         logger.debug(f"Результат проверки авторизации: {authorized}")
 
         if authorized:
-            # Если пользователь авторизован, показываем сообщение и кнопку статистики
+            # Если пользователь авторизован, показываем сообщение и кнопки
             language = statistics.get_user_language(user_id)
             markup = types.InlineKeyboardMarkup(row_width=1)
-            
+
             if language == 'RU':
+                creators_btn = types.InlineKeyboardButton("👤 Для создателей", callback_data='creators_menu')
                 stats_btn = types.InlineKeyboardButton("📊 Статистика", callback_data='statistics_menu')
                 message_text = "✅ Вы авторизованы!"
             else:  # EN
+                creators_btn = types.InlineKeyboardButton("👤 For Creators", callback_data='creators_menu')
                 stats_btn = types.InlineKeyboardButton("📊 Statistics", callback_data='statistics_menu')
                 message_text = "✅ You are authorized!"
-            
-            markup.add(stats_btn)
+
+            markup.add(creators_btn, stats_btn)
             bot.edit_message_text(message_text, chat_id, msg.message_id, reply_markup=markup)
         else:
             markup = types.InlineKeyboardMarkup(row_width=2)
@@ -118,6 +121,9 @@ def main():
 
         # Регистрируем обработчики для статистики
         statistics.register_statistics_handlers(bot)
+        
+        # Регистрируем обработчики для создателей
+        creators.register_creators_handlers(bot)
 
         logger.info("Бот запущен. Кэш пользователей инициализирован.")
 
