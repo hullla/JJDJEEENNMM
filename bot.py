@@ -6,7 +6,13 @@ import requests
 from datetime import datetime, timedelta
 import json
 import os
-import statistics
+# Импортируем функции из statistics.py
+from statistics import (
+    get_user_stats,
+    get_global_stats,
+    get_activity_stats,
+    generate_detailed_stats_file
+)
 
 # Настройка более подробного логирования
 logging.basicConfig(
@@ -32,7 +38,7 @@ ACTIVITY_UPDATE_COOLDOWN = 6 * 3600  # 6 часов в секундах
 def initialize_jsonbin():
     """Проверяет и инициализирует структуру в JSONBin, если она отсутствует"""
     try:
-        users = statistics.get_users_data(JSONBIN_BIN_ID, JSONBIN_API_KEY, force_update=True)
+        users = get_users_data(force_update=True)
         if users is None:
             # Создаем начальную структуру
             initial_data = {"users": []}
@@ -48,6 +54,52 @@ def initialize_jsonbin():
     except Exception as e:
         logger.error(f"Ошибка при инициализации JSONBin: {e}")
         return False
+
+def get_users_data(force_update=False):
+    """Получает данные всех пользователей из JSONBin.io с кэшированием"""
+    global users_cache, last_cache_update
+
+    current_time = time.time()
+
+    # Используем кэш, если он актуален и не требуется принудительное обновление
+    if not force_update and users_cache is not None and (current_time - last_cache_update) < CACHE_TTL:
+        return users_cache
+
+    try:
+        logger.debug("Запрашиваем данные из JSONBin...")
+        url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}"
+        headers = {
+            "X-Master-Key": JSONBIN_API_KEY,
+            "X-Bin-Meta": "false"  # Получаем только содержимое без метаданных
+        }
+        response = requests.get(url, headers=headers)
+        logger.debug(f"Ответ от JSONBin: {response.status_code}")
+
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                if isinstance(data, dict) and 'users' in data:
+                    users_data = data['users']
+                else:
+                    # Если структура неправильная, инициализируем ее
+                    logger.warning("Неверная структура данных, инициализируем...")
+                    users_data = []
+                    initialize_jsonbin()
+
+                # Обновляем кэш
+                users_cache = users_data
+                last_cache_update = current_time
+                logger.debug(f"Данные пользователей обновлены: {len(users_data)} записей")
+                return users_data
+            except json.JSONDecodeError:
+                logger.error(f"Ошибка декодирования JSON: {response.text}")
+                return users_cache or []
+        else:
+            logger.error(f"Ошибка получения данных из JSONBin: {response.status_code}, {response.text}")
+            return users_cache or []  # Возвращаем старый кэш, если он есть
+    except Exception as e:
+        logger.error(f"Ошибка при получении данных из JSONBin: {e}")
+        return users_cache or []  # Возвращаем старый кэш, если он есть
 
 def update_users_data(users_data):
     """Обновляет данные пользователей в JSONBin.io и кэш"""
@@ -79,7 +131,7 @@ def update_users_data(users_data):
 def is_user_authorized(user_id):
     """Проверяет, авторизован ли пользователь, ищет его ID в кэше данных JSONBin"""
     try:
-        users = statistics.get_users_data(JSONBIN_BIN_ID, JSONBIN_API_KEY)
+        users = get_users_data()
         if users is None:
             logger.warning("Не удалось получить данные пользователей")
             return False
@@ -104,7 +156,7 @@ def check_and_update_last_access(user_id):
     только если прошло больше 6 часов с момента последнего обновления
     """
     try:
-        users = statistics.get_users_data(JSONBIN_BIN_ID, JSONBIN_API_KEY)
+        users = get_users_data()
         if users is None:
             logger.error("Не удалось получить данные пользователей для обновления времени последнего захода")
             return False
@@ -147,7 +199,7 @@ def check_and_update_last_access(user_id):
 def register_user(user_id, language):
     """Регистрирует нового пользователя в JSONBin"""
     try:
-        users = statistics.get_users_data(JSONBIN_BIN_ID, JSONBIN_API_KEY)
+        users = get_users_data()
         if users is None:
             logger.error("Не удалось получить данные пользователей для регистрации")
             return False
@@ -207,18 +259,23 @@ def start_command(message):
 
         if authorized:
             # Получаем язык пользователя
-            language = statistics.get_user_language(user_id, JSONBIN_BIN_ID, JSONBIN_API_KEY)
+            user_data = get_user_stats(user_id, get_users_data())
+            language = user_data.get('language', 'RU')
             
-            # Инлайн-клавиатура с кнопкой статистики
-            markup = types.InlineKeyboardMarkup()
+            # Создаем инлайн-кнопку для статистики
+            markup = types.InlineKeyboardMarkup(row_width=1)
             if language == 'RU':
-                stats_button = types.InlineKeyboardButton("📊 Статистика", callback_data='show_stats')
-                welcome_text = "Добро пожаловать! Выберите действие:"
+                stats_button = types.InlineKeyboardButton("📊 Статистика", callback_data='statistics')
             else:  # EN
-                stats_button = types.InlineKeyboardButton("📊 Statistics", callback_data='show_stats')
-                welcome_text = "Welcome! Choose an action:"
-            
+                stats_button = types.InlineKeyboardButton("📊 Statistics", callback_data='statistics')
             markup.add(stats_button)
+            
+            # Сообщение в зависимости от языка
+            if language == 'RU':
+                welcome_text = "✅ Вы авторизованы! Используйте кнопку ниже для просмотра статистики."
+            else:  # EN
+                welcome_text = "✅ You are authorized! Use the button below to view statistics."
+            
             bot.edit_message_text(welcome_text, chat_id, msg.message_id, reply_markup=markup)
         else:
             markup = types.InlineKeyboardMarkup(row_width=2)
@@ -233,63 +290,101 @@ def start_command(message):
         except:
             pass
 
-@bot.message_handler(commands=['stats'])
-def stats_command(message):
-    """Перенаправляет на общую функцию показа статистики"""
-    try:
-        user_id = message.from_user.id
-        chat_id = message.chat.id
-        logger.info(f"Команда /stats от пользователя {user_id}")
-
-        # Проверка авторизации
-        if not is_user_authorized(user_id):
-            language = 'RU'  # По умолчанию
-            response = "Вы не авторизованы. Используйте /start для регистрации." if language == 'RU' else "You are not authorized. Use /start to register."
-            bot.send_message(chat_id, response)
-            return
-
-        # Показываем статистику
-        show_statistics(user_id, chat_id)
-    except Exception as e:
-        logger.error(f"Ошибка при обработке команды /stats: {e}")
-        try:
-            bot.send_message(chat_id, "Произошла ошибка при получении статистики. Попробуйте позже.")
-        except:
-            pass
-
-def show_statistics(user_id, chat_id):
-    """Общая функция для отображения статистики"""
-    try:
-        # Получаем язык пользователя
-        language = statistics.get_user_language(user_id, JSONBIN_BIN_ID, JSONBIN_API_KEY)
-        
-        # Генерируем сообщение со статистикой
-        stats_message = statistics.generate_stats_message(user_id, JSONBIN_BIN_ID, JSONBIN_API_KEY)
-        
-        # Получаем инлайн кнопку для детальной статистики
-        markup = statistics.get_detailed_stats_button(language)
-        
-        # Отправляем сообщение с кнопкой
-        bot.send_message(chat_id, stats_message, parse_mode="Markdown", reply_markup=markup)
-    except Exception as e:
-        logger.error(f"Ошибка при отображении статистики: {e}")
-        language = statistics.get_user_language(user_id, JSONBIN_BIN_ID, JSONBIN_API_KEY)
-        error_msg = "Произошла ошибка при получении статистики. Попробуйте позже." if language == 'RU' else "An error occurred while retrieving statistics. Please try again later."
-        bot.send_message(chat_id, error_msg)
-
-@bot.callback_query_handler(func=lambda call: call.data == 'show_stats')
-def show_stats_callback(call):
-    """Обработчик для инлайн кнопки статистики"""
+@bot.callback_query_handler(func=lambda call: call.data == 'statistics')
+def statistics_callback(call):
     try:
         user_id = call.from_user.id
         chat_id = call.message.chat.id
         logger.info(f"Запрос статистики от пользователя {user_id}")
-        
-        # Отвечаем на колбэк, чтобы убрать часы загрузки
+
+        # Проверка авторизации
+        if not is_user_authorized(user_id):
+            bot.answer_callback_query(call.id, "Вы не авторизованы. Используйте /start для регистрации.")
+            return
+
+        # Получаем данные пользователя и язык
+        users_data = get_users_data()
+        user_data = get_user_stats(user_id, users_data)
+        language = user_data.get('language', 'RU')
+
+        # Получаем общую статистику
+        global_stats = get_global_stats(users_data)
+        if not global_stats:
+            response_text = "Не удалось получить статистику." if language == 'RU' else "Failed to get statistics."
+            bot.send_message(chat_id, response_text)
+            return
+
+        # Получаем статистику активности
+        activity_stats = get_activity_stats(users_data)
+        if not activity_stats:
+            response_text = "Не удалось получить статистику активности." if language == 'RU' else "Failed to get activity statistics."
+            bot.send_message(chat_id, response_text)
+            return
+
+        # Формируем сообщение с основной статистикой
+        if language == 'RU':
+            message_text = (
+                f"📊 *Ваша статистика:*\n"
+                f"🆔 ID: `{user_id}`\n"
+                f"🌐 Язык: {user_data.get('language')}\n"
+                f"📅 Дата регистрации: {user_data.get('registration_time')}\n"
+                f"⏱ Последний вход: {user_data.get('last_access')}\n\n"
+                f"📈 *Общая статистика:*\n"
+                f"👥 Всего пользователей: {global_stats['total_users']}\n"
+                f"🇷🇺 Пользователей RU: {global_stats['ru_users']}\n"
+                f"🇬🇧 Пользователей EN: {global_stats['en_users']}\n\n"
+                f"*Активность (последний заход):*\n"
+                f"🔹 Сегодня: {activity_stats['active']['today']}\n"
+                f"🔹 За неделю: {activity_stats['active']['week']}\n"
+                f"🔹 За месяц: {activity_stats['active']['month']}\n"
+                f"🔹 Более месяца: {activity_stats['active']['more']}\n\n"
+                f"*Регистрация новых пользователей:*\n"
+                f"🔸 Сегодня: {activity_stats['joined']['today']}\n"
+                f"🔸 За неделю: {activity_stats['joined']['week']}\n"
+                f"🔸 За месяц: {activity_stats['joined']['month']}\n"
+                f"🔸 Более месяца назад: {activity_stats['joined']['more']}\n\n"
+                f"*Статистика стран:*\n"
+                f"📱 За 24 часа: RU {activity_stats['countries']['24h']['RU']}, EN {activity_stats['countries']['24h']['EN']}\n"
+                f"📆 За неделю: RU {activity_stats['countries']['week']['RU']}, EN {activity_stats['countries']['week']['EN']}\n"
+                f"🗓 За месяц: RU {activity_stats['countries']['month']['RU']}, EN {activity_stats['countries']['month']['EN']}"
+            )
+        else:  # EN
+            message_text = (
+                f"📊 *Your statistics:*\n"
+                f"🆔 ID: `{user_id}`\n"
+                f"🌐 Language: {user_data.get('language')}\n"
+                f"📅 Registration date: {user_data.get('registration_time')}\n"
+                f"⏱ Last access: {user_data.get('last_access')}\n\n"
+                f"📈 *Global statistics:*\n"
+                f"👥 Total users: {global_stats['total_users']}\n"
+                f"🇷🇺 RU users: {global_stats['ru_users']}\n"
+                f"🇬🇧 EN users: {global_stats['en_users']}\n\n"
+                f"*Activity (last access):*\n"
+                f"🔹 Today: {activity_stats['active']['today']}\n"
+                f"🔹 This week: {activity_stats['active']['week']}\n"
+                f"🔹 This month: {activity_stats['active']['month']}\n"
+                f"🔹 More than a month: {activity_stats['active']['more']}\n\n"
+                f"*New user registrations:*\n"
+                f"🔸 Today: {activity_stats['joined']['today']}\n"
+                f"🔸 This week: {activity_stats['joined']['week']}\n"
+                f"🔸 This month: {activity_stats['joined']['month']}\n"
+                f"🔸 More than a month ago: {activity_stats['joined']['more']}\n\n"
+                f"*Country statistics:*\n"
+                f"📱 Last 24 hours: RU {activity_stats['countries']['24h']['RU']}, EN {activity_stats['countries']['24h']['EN']}\n"
+                f"📆 Last week: RU {activity_stats['countries']['week']['RU']}, EN {activity_stats['countries']['week']['EN']}\n"
+                f"🗓 Last month: RU {activity_stats['countries']['month']['RU']}, EN {activity_stats['countries']['month']['EN']}"
+            )
+
+        # Создаем кнопку для детальной статистики
+        markup = types.InlineKeyboardMarkup()
+        if language == 'RU':
+            detailed_button = types.InlineKeyboardButton("📋 Детальная статистика за месяц", callback_data='detailed_stats')
+        else:
+            detailed_button = types.InlineKeyboardButton("📋 Detailed monthly statistics", callback_data='detailed_stats')
+        markup.add(detailed_button)
+
+        bot.send_message(chat_id, message_text, parse_mode="Markdown", reply_markup=markup)
         bot.answer_callback_query(call.id)
-        
-        # Показываем статистику
-        show_statistics(user_id, chat_id)
     except Exception as e:
         logger.error(f"Ошибка при обработке запроса статистики: {e}")
         try:
@@ -299,48 +394,43 @@ def show_stats_callback(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == 'detailed_stats')
 def detailed_stats_callback(call):
-    """Обработчик для инлайн кнопки детальной статистики"""
     try:
         user_id = call.from_user.id
         chat_id = call.message.chat.id
         logger.info(f"Запрос детальной статистики от пользователя {user_id}")
-        
-        # Отвечаем на колбэк, чтобы убрать часы загрузки
-        bot.answer_callback_query(call.id)
-        
-        # Получаем язык пользователя
-        language = statistics.get_user_language(user_id, JSONBIN_BIN_ID, JSONBIN_API_KEY)
-        
-        # Получаем детальную статистику
-        stats = statistics.get_activity_stats(JSONBIN_BIN_ID, JSONBIN_API_KEY)
-        if not stats:
-            error_msg = "Не удалось получить детальную статистику." if language == 'RU' else "Failed to retrieve detailed statistics."
-            bot.send_message(chat_id, error_msg)
+
+        # Проверка авторизации
+        if not is_user_authorized(user_id):
+            bot.answer_callback_query(call.id, "Вы не авторизованы. Используйте /start для регистрации.")
             return
-        
-        # Сохраняем статистику в файл
-        filename = statistics.save_daily_stats_to_file(stats)
+
+        # Получаем данные пользователя и язык
+        user_data = get_user_stats(user_id, get_users_data())
+        language = user_data.get('language', 'RU')
+
+        # Генерируем файл со статистикой
+        filename = generate_detailed_stats_file()
         if not filename:
-            error_msg = "Не удалось сохранить статистику в файл." if language == 'RU' else "Failed to save statistics to file."
-            bot.send_message(chat_id, error_msg)
+            response_text = "Не удалось создать файл статистики." if language == 'RU' else "Failed to create statistics file."
+            bot.answer_callback_query(call.id, response_text)
             return
-        
+
         # Отправляем файл
-        with open(filename, 'rb') as f:
-            caption = "Детальная статистика за последний месяц" if language == 'RU' else "Detailed statistics for the last month"
-            bot.send_document(chat_id, f, caption=caption)
-            
-        # Удаляем файл после отправки
+        with open(filename, 'rb') as file:
+            caption = "Детальная статистика по дням за последний месяц" if language == 'RU' else "Detailed statistics by day for the last month"
+            bot.send_document(chat_id, file, caption=caption)
+        
+        # Удаляем временный файл
         try:
             os.remove(filename)
         except:
             pass
+            
+        bot.answer_callback_query(call.id)
     except Exception as e:
         logger.error(f"Ошибка при обработке запроса детальной статистики: {e}")
         try:
-            language = statistics.get_user_language(user_id, JSONBIN_BIN_ID, JSONBIN_API_KEY)
-            error_msg = "Произошла ошибка при получении детальной статистики. Попробуйте позже." if language == 'RU' else "An error occurred while retrieving detailed statistics. Please try again later."
-            bot.send_message(chat_id, error_msg)
+            bot.answer_callback_query(call.id, "Произошла ошибка. Попробуйте позже.")
         except:
             pass
 
@@ -353,33 +443,29 @@ def language_callback(call):
 
         # Финальная проверка перед регистрацией
         if is_user_authorized(user_id):
-            # Создаем инлайн-клавиатуру с кнопкой статистики
-            markup = types.InlineKeyboardMarkup()
-            if language == 'RU':
-                stats_button = types.InlineKeyboardButton("📊 Статистика", callback_data='show_stats')
-                welcome_text = "Вы уже в системе! Выберите действие:"
-            else:  # EN
-                stats_button = types.InlineKeyboardButton("📊 Statistics", callback_data='show_stats')
-                welcome_text = "You are already registered! Choose an action:"
+            response = "🔐 Вы уже в системе!" if language == 'RU' else "🔐 Already registered!"
             
+            # Добавляем кнопку для просмотра статистики
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            stats_button_text = "📊 Статистика" if language == 'RU' else "📊 Statistics"
+            stats_button = types.InlineKeyboardButton(stats_button_text, callback_data='statistics')
             markup.add(stats_button)
-            bot.edit_message_text(welcome_text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+            
+            bot.edit_message_text(response, call.message.chat.id, call.message.message_id, reply_markup=markup)
             return
 
         # Регистрация пользователя в JSONBin
         try:
             if register_user(user_id, language):
-                # Создаем инлайн-клавиатуру с кнопкой статистики
-                markup = types.InlineKeyboardMarkup()
-                if language == 'RU':
-                    stats_button = types.InlineKeyboardButton("📊 Статистика", callback_data='show_stats')
-                    welcome_text = "Регистрация успешна! Выберите действие:"
-                else:  # EN
-                    stats_button = types.InlineKeyboardButton("📊 Statistics", callback_data='show_stats')
-                    welcome_text = "Registration successful! Choose an action:"
+                response = "📬 Запрос отправлен!" if language == 'RU' else "📬 Request submitted!"
                 
+                # Добавляем кнопку для просмотра статистики
+                markup = types.InlineKeyboardMarkup(row_width=1)
+                stats_button_text = "📊 Статистика" if language == 'RU' else "📊 Statistics"
+                stats_button = types.InlineKeyboardButton(stats_button_text, callback_data='statistics')
                 markup.add(stats_button)
-                bot.edit_message_text(welcome_text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+                
+                bot.edit_message_text(response, call.message.chat.id, call.message.message_id, reply_markup=markup)
             else:
                 response = "⚠️ Ошибка регистрации" if language == 'RU' else "⚠️ Registration error"
                 bot.edit_message_text(response, call.message.chat.id, call.message.message_id)
@@ -404,7 +490,7 @@ def main():
 
         # При запуске бота, сразу загружаем данные пользователей в кэш
         logger.info("Загрузка данных пользователей в кэш...")
-        users = statistics.get_users_data(JSONBIN_BIN_ID, JSONBIN_API_KEY, force_update=True)
+        users = get_users_data(force_update=True)
         logger.info(f"Загружено {len(users) if users else 0} записей")
 
         logger.info("Бот запущен. Кэш пользователей инициализирован.")
